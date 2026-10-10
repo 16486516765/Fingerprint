@@ -163,13 +163,31 @@ fun ProfileListScreen(
                                 text = { Text("提交 Bug 反馈") },
                                 onClick = {
                                     menuOpen = false
-                                    val url = "https://github.com/16486516765/Fingerprint/issues/new?template=bug_report.md"
-                                    context.startActivity(
-                                        android.content.Intent(
-                                            android.content.Intent.ACTION_VIEW,
-                                            android.net.Uri.parse(url)
-                                        )
-                                    )
+                                    // 邮件反馈：收件人写死，主题和正文带设备信息模板
+                                    val body = """
+                                        【问题描述】
+
+
+                                        【复现步骤】
+                                        1.
+                                        2.
+
+                                        【崩溃日志】（如有，App 内 ⋮ → 查看崩溃日志 → 导出 .txt 后粘贴）
+                                        （无）
+
+                                        ---
+                                        App 版本：v0.1.0
+                                        手机：${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}
+                                        Android：${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})
+                                    """.trimIndent()
+                                    val emailIntent = android.content.Intent(
+                                        android.content.Intent.ACTION_SENDTO
+                                    ).apply {
+                                        data = android.net.Uri.parse("mailto:fankui@limao71.ccwu.cc")
+                                        putExtra(android.content.Intent.EXTRA_SUBJECT, "[Fingerprint Bug] ")
+                                        putExtra(android.content.Intent.EXTRA_TEXT, body)
+                                    }
+                                    context.startActivity(emailIntent)
                                 }
                             )
                         }
