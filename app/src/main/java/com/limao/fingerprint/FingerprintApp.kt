@@ -33,13 +33,28 @@ class FingerprintApp : Application() {
         val slot = processName
             ?.substringAfterLast(":wv", missingDelimiterValue = "")
             ?.toIntOrNull()
+        // [DEBUG-wv] 把进程隔离的关键信息写进 crash.log，排查 cookies 共享用
+        val dbg = StringBuilder()
+        dbg.appendLine("========== WV_INIT ==========")
+        dbg.appendLine("进程名: $processName")
+        dbg.appendLine("解析 slot: $slot")
         if (slot != null) {
             try {
                 WebView.setDataDirectorySuffix("fp_slot_$slot")
+                dbg.appendLine("setDataDirectorySuffix 成功: fp_slot_$slot")
                 Log.i(TAG, "WebView 数据目录后缀已设置: fp_slot_$slot（进程 $processName）")
             } catch (e: Exception) {
+                dbg.appendLine("setDataDirectorySuffix 失败: ${e::class.java.name}: ${e.message}")
                 Log.e(TAG, "setDataDirectorySuffix 失败", e)
             }
+        } else {
+            dbg.appendLine("主进程，不设置后缀")
+        }
+        dbg.appendLine()
+        try {
+            CrashHandler.getLogFile(this).appendText(dbg.toString())
+        } catch (e: Exception) {
+            Log.e(TAG, "写入 WV_INIT 日志失败", e)
         }
     }
 
