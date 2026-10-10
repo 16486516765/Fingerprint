@@ -139,17 +139,23 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 按 profile.slot 启动对应进程的 BrowserActivity。
-     * slot 0 -> ".ui.BrowserActivity"（:wv0，本体）
-     * slot N -> ".BrowserActivityN"（:wvN，activity-alias）
+     * slot 0 -> "com.limao.fingerprint.ui.BrowserActivity"（:wv0，本体）
+     * slot N -> "com.limao.fingerprint.BrowserActivityN"（:wvN，activity-alias）
+     *
+     * 注意：类名必须用 namespace（com.limao.fingerprint）拼接，不能用运行时 packageName，
+     * 因为 debug 构建的 applicationId 带 ".debug" 后缀，而 Manifest 中的 activity
+     * 是按 namespace 解析的。用错会导致 ActivityNotFoundException 闪退。
      */
     private fun launchBrowser(profile: Profile) {
-        val componentName = if (profile.slot == 0) {
-            "$packageName.ui.BrowserActivity"
+        // namespace 写死，不随 applicationIdSuffix 变化
+        val namespace = "com.limao.fingerprint"
+        val className = if (profile.slot == 0) {
+            "$namespace.ui.BrowserActivity"
         } else {
-            "$packageName.BrowserActivity${profile.slot}"
+            "$namespace.BrowserActivity${profile.slot}"
         }
         val intent = Intent()
-            .setClassName(packageName, componentName)
+            .setClassName(packageName, className)
             .putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
         startActivity(intent)
     }
