@@ -45,6 +45,32 @@ object CrashHandler {
         getLogFile(context).delete()
     }
 
+    /**
+     * 导出日志为 .txt 到系统下载目录（MediaStore，Android 10+ 无需存储权限）。
+     * 返回是否成功，文件名形如 Fingerprint-crash-20261010-213000.txt。
+     */
+    fun exportTxt(context: Context, content: String): Boolean {
+        return try {
+            val time = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.getDefault()).format(Date())
+            val fileName = "Fingerprint-crash-$time.txt"
+            val values = android.content.ContentValues().apply {
+                put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName)
+                put(android.provider.MediaStore.Downloads.MIME_TYPE, "text/plain")
+            }
+            val resolver = context.contentResolver
+            val uri = resolver.insert(
+                android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+            ) ?: return false
+            resolver.openOutputStream(uri)?.use { it.write(content.toByteArray()) }
+                ?: return false
+            Log.i(TAG, "崩溃日志已导出: $fileName")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "导出崩溃日志失败", e)
+            false
+        }
+    }
+
     private fun writeCrashLog(context: Context, thread: Thread, throwable: Throwable) {
         val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
         val sb = StringBuilder()

@@ -192,6 +192,10 @@ fun ProfileListScreen(
                             CrashHandler.clearLog(context)
                             crashLogText = "已清空"
                         }) { Text("清空", color = Color.Red) }
+                        TextButton(onClick = {
+                            val ok = CrashHandler.exportTxt(context, crashLogText)
+                            crashLogText = if (ok) "已导出到下载目录，请查看" else crashLogText
+                        }) { Text("导出 .txt") }
                         TextButton(onClick = { crashLogOpen = false }) { Text("关闭") }
                     }
                 }
