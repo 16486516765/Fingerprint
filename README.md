@@ -13,11 +13,7 @@
 - **Favicon 识别**：Profile 图标自动读取绑定网站的 favicon
 - **深色主题**：纯黑 Material 3 界面
 
-## 构建
-
-推送到 `main` 分支后，GitHub Actions 自动构建 debug APK 并发布到 Release。
-
-也可以本地构建：
+## 本地构建
 
 ```bash
 gradle assembleDebug
