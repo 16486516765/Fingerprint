@@ -7,9 +7,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import com.limao.fingerprint.FingerprintTheme
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProfileRepository
-import com.limao.fingerprint.ui.BrowserScreen
 import kotlinx.coroutines.launch
 
 /**
