@@ -159,6 +159,19 @@ fun ProfileListScreen(
                                     crashLogOpen = true
                                 }
                             )
+                            DropdownMenuItem(
+                                text = { Text("提交 Bug 反馈") },
+                                onClick = {
+                                    menuOpen = false
+                                    val url = "https://github.com/16486516765/Fingerprint/issues/new?template=bug_report.md"
+                                    context.startActivity(
+                                        android.content.Intent(
+                                            android.content.Intent.ACTION_VIEW,
+                                            android.net.Uri.parse(url)
+                                        )
+                                    )
+                                }
+                            )
                         }
                     }
                 }
