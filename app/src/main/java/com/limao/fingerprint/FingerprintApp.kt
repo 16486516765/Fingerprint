@@ -26,6 +26,8 @@ class FingerprintApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // 最先启用崩溃捕获，后续任何异常都能记录
+        CrashHandler.init(this)
         val processName = currentProcessName()
         // 形如 com.limao.fingerprint:wv2 -> 取出 slot 数字 2
         val slot = processName

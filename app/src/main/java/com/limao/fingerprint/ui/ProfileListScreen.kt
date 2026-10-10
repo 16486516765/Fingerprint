@@ -20,12 +20,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Fingerprint
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -36,6 +41,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -49,11 +55,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import android.content.Context
 import coil.compose.AsyncImage
+import com.limao.fingerprint.CrashHandler
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProxyType
 
@@ -87,6 +97,11 @@ fun ProfileListScreen(
     onEdit: (String) -> Unit,
     onAdd: () -> Unit
 ) {
+    val context = LocalContext.current
+    // 右上角菜单与崩溃日志对话框
+    var menuOpen by remember { mutableStateOf(false) }
+    var crashLogOpen by remember { mutableStateOf(false) }
+    var crashLogText by remember { mutableStateOf("") }
     // 搜索框展开状态与关键字
     var searchOpen by remember { mutableStateOf(false) }
     var keyword by remember { mutableStateOf("") }
@@ -127,10 +142,61 @@ fun ProfileListScreen(
                     IconButton(onClick = onAdd) {
                         Icon(Icons.Filled.Add, contentDescription = "新建 Profile")
                     }
+                    // 右上角菜单：崩溃日志
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "更多")
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("查看崩溃日志") },
+                                onClick = {
+                                    menuOpen = false
+                                    crashLogText = CrashHandler.readLog(context)
+                                    crashLogOpen = true
+                                }
+                            )
+                        }
+                    }
                 }
             )
         }
     ) { padding ->
+
+        // 崩溃日志对话框
+        if (crashLogOpen) {
+            AlertDialog(
+                onDismissRequest = { crashLogOpen = false },
+                title = { Text("崩溃日志") },
+                text = {
+                    Text(
+                        crashLogText,
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        fontSize = 11.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        // 复制到剪贴板
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", crashLogText))
+                    }) { Text("复制") }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            CrashHandler.clearLog(context)
+                            crashLogText = "已清空"
+                        }) { Text("清空", color = Color.Red) }
+                        TextButton(onClick = { crashLogOpen = false }) { Text("关闭") }
+                    }
+                }
+            )
+        }
         Column(
             modifier = Modifier
                 .fillMaxSize()
