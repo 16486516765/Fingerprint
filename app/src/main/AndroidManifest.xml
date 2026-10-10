@@ -31,35 +31,35 @@
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <!-- 浏览器进程 :wv1 ~ :wv5（通过 alias 复用同一个 BrowserActivity 类） -->
-        <activity-alias
-            android:name=".BrowserActivity1"
-            android:targetActivity=".ui.BrowserActivity"
+        <activity
+            android:name=".ui.BrowserActivity1"
             android:exported="false"
             android:process=":wv1"
-            android:taskAffinity="com.limao.fingerprint.wv1" />
-        <activity-alias
-            android:name=".BrowserActivity2"
-            android:targetActivity=".ui.BrowserActivity"
+            android:taskAffinity="com.limao.fingerprint.wv1"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity
+            android:name=".ui.BrowserActivity2"
             android:exported="false"
             android:process=":wv2"
-            android:taskAffinity="com.limao.fingerprint.wv2" />
-        <activity-alias
-            android:name=".BrowserActivity3"
-            android:targetActivity=".ui.BrowserActivity"
+            android:taskAffinity="com.limao.fingerprint.wv2"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity
+            android:name=".ui.BrowserActivity3"
             android:exported="false"
             android:process=":wv3"
-            android:taskAffinity="com.limao.fingerprint.wv3" />
-        <activity-alias
-            android:name=".BrowserActivity4"
-            android:targetActivity=".ui.BrowserActivity"
+            android:taskAffinity="com.limao.fingerprint.wv3"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity
+            android:name=".ui.BrowserActivity4"
             android:exported="false"
             android:process=":wv4"
-            android:taskAffinity="com.limao.fingerprint.wv4" />
-        <activity-alias
-            android:name=".BrowserActivity5"
-            android:targetActivity=".ui.BrowserActivity"
+            android:taskAffinity="com.limao.fingerprint.wv4"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+        <activity
+            android:name=".ui.BrowserActivity5"
             android:exported="false"
             android:process=":wv5"
-            android:taskAffinity="com.limao.fingerprint.wv5" />
+            android:taskAffinity="com.limao.fingerprint.wv5"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
     </application>
 </manifest>

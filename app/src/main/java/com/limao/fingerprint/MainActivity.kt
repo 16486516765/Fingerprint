@@ -138,9 +138,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 按 profile.slot 启动对应进程的 BrowserActivity。
-     * slot 0 -> "com.limao.fingerprint.ui.BrowserActivity"（:wv0，本体）
-     * slot N -> "com.limao.fingerprint.BrowserActivityN"（:wvN，activity-alias）
+     * 按 profile.slot 启动对应进程的 BrowserActivity 子类。
+     * slot 0 -> ui.BrowserActivity（:wv0）
+     * slot N -> ui.BrowserActivityN（:wvN）
      *
      * 注意：类名必须用 namespace（com.limao.fingerprint）拼接，不能用运行时 packageName，
      * 因为 debug 构建的 applicationId 带 ".debug" 后缀，而 Manifest 中的 activity
@@ -152,7 +152,7 @@ class MainActivity : ComponentActivity() {
         val className = if (profile.slot == 0) {
             "$namespace.ui.BrowserActivity"
         } else {
-            "$namespace.BrowserActivity${profile.slot}"
+            "$namespace.ui.BrowserActivity${profile.slot}"
         }
         // [DEBUG] 预检：问 PackageManager 能不能解析到目标组件
         val pm = packageManager

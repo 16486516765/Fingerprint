@@ -20,7 +20,7 @@ import kotlinx.coroutines.launch
  * profile（主进程负责写），之后不再跨进程碰 DataStore，避免竞态。
  * profile 为空（被主进程删了）则直接 finish。
  */
-class BrowserActivity : ComponentActivity() {
+open class BrowserActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_PROFILE_ID = "profileId"
