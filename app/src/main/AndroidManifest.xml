@@ -24,7 +24,7 @@
 
         <!-- 浏览器进程 :wv0（slot 0 的本体声明） -->
         <activity
-            android:name=".BrowserActivity"
+            android:name=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv0"
             android:configChanges="orientation|screenSize|keyboardHidden" />
@@ -32,27 +32,27 @@
         <!-- 浏览器进程 :wv1 ~ :wv5（通过 alias 复用同一个 BrowserActivity 类） -->
         <activity-alias
             android:name=".BrowserActivity1"
-            android:targetActivity=".BrowserActivity"
+            android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv1" />
         <activity-alias
             android:name=".BrowserActivity2"
-            android:targetActivity=".BrowserActivity"
+            android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv2" />
         <activity-alias
             android:name=".BrowserActivity3"
-            android:targetActivity=".BrowserActivity"
+            android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv3" />
         <activity-alias
             android:name=".BrowserActivity4"
-            android:targetActivity=".BrowserActivity"
+            android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv4" />
         <activity-alias
             android:name=".BrowserActivity5"
-            android:targetActivity=".BrowserActivity"
+            android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv5" />
     </application>

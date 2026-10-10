@@ -139,12 +139,12 @@ class MainActivity : ComponentActivity() {
 
     /**
      * 按 profile.slot 启动对应进程的 BrowserActivity。
-     * slot 0 -> ".BrowserActivity"（:wv0）
+     * slot 0 -> ".ui.BrowserActivity"（:wv0，本体）
      * slot N -> ".BrowserActivityN"（:wvN，activity-alias）
      */
     private fun launchBrowser(profile: Profile) {
         val componentName = if (profile.slot == 0) {
-            "$packageName.BrowserActivity"
+            "$packageName.ui.BrowserActivity"
         } else {
             "$packageName.BrowserActivity${profile.slot}"
         }

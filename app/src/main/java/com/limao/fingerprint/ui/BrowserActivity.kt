@@ -1,4 +1,4 @@
-package com.limao.fingerprint
+package com.limao.fingerprint.ui
 
 import android.os.Bundle
 import androidx.activity.ComponentActivity
