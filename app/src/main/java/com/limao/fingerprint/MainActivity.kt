@@ -158,6 +158,8 @@ class MainActivity : ComponentActivity() {
             val intent = Intent()
                 .setClassName(packageName, className)
                 .putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
+                // 每个 profile 跑独立任务，避免复用已有的 BrowserActivity 任务导致进程没起新
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
         } catch (e: Exception) {
             // [DEBUG] 启动浏览器失败时弹 Toast，把异常名打出来

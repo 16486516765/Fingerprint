@@ -27,6 +27,7 @@
             android:name=".ui.BrowserActivity"
             android:exported="false"
             android:process=":wv0"
+            android:taskAffinity="com.limao.fingerprint.wv0"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
         <!-- 浏览器进程 :wv1 ~ :wv5（通过 alias 复用同一个 BrowserActivity 类） -->
@@ -34,26 +35,31 @@
             android:name=".BrowserActivity1"
             android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
-            android:process=":wv1" />
+            android:process=":wv1"
+            android:taskAffinity="com.limao.fingerprint.wv1" />
         <activity-alias
             android:name=".BrowserActivity2"
             android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
-            android:process=":wv2" />
+            android:process=":wv2"
+            android:taskAffinity="com.limao.fingerprint.wv2" />
         <activity-alias
             android:name=".BrowserActivity3"
             android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
-            android:process=":wv3" />
+            android:process=":wv3"
+            android:taskAffinity="com.limao.fingerprint.wv3" />
         <activity-alias
             android:name=".BrowserActivity4"
             android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
-            android:process=":wv4" />
+            android:process=":wv4"
+            android:taskAffinity="com.limao.fingerprint.wv4" />
         <activity-alias
             android:name=".BrowserActivity5"
             android:targetActivity=".ui.BrowserActivity"
             android:exported="false"
-            android:process=":wv5" />
+            android:process=":wv5"
+            android:taskAffinity="com.limao.fingerprint.wv5" />
     </application>
 </manifest>
