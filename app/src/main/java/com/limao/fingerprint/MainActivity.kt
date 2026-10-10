@@ -154,9 +154,19 @@ class MainActivity : ComponentActivity() {
         } else {
             "$namespace.BrowserActivity${profile.slot}"
         }
-        val intent = Intent()
-            .setClassName(packageName, className)
-            .putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
-        startActivity(intent)
+        try {
+            val intent = Intent()
+                .setClassName(packageName, className)
+                .putExtra(BrowserActivity.EXTRA_PROFILE_ID, profile.id)
+            startActivity(intent)
+        } catch (e: Exception) {
+            // [DEBUG] 启动浏览器失败时弹 Toast，把异常名打出来
+            android.util.Log.e("FingerprintApp", "[DEBUG-launch] 启动失败: $className", e)
+            android.widget.Toast.makeText(
+                this,
+                "启动失败: ${e::class.java.simpleName}: ${e.message}",
+                android.widget.Toast.LENGTH_LONG
+            ).show()
+        }
     }
 }
