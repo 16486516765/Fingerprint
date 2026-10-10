@@ -154,18 +154,6 @@ class MainActivity : ComponentActivity() {
         } else {
             "$namespace.ui.BrowserActivity${profile.slot}"
         }
-        // [DEBUG] 预检：问 PackageManager 能不能解析到目标组件
-        val pm = packageManager
-        val cn = android.content.ComponentName(packageName, className)
-        val resolveInfo = try {
-            pm.getActivityInfo(cn, 0)
-            "OK"
-        } catch (e: Exception) {
-            "FAIL: ${e::class.java.simpleName}: ${e.message}"
-        }
-        android.util.Log.e("FingerprintApp", "[DEBUG-launch] 组件解析: $className -> $resolveInfo")
-        android.widget.Toast.makeText(this, "组件解析: $resolveInfo", android.widget.Toast.LENGTH_LONG).show()
-
         try {
             val intent = Intent()
                 .setClassName(packageName, className)
@@ -173,14 +161,11 @@ class MainActivity : ComponentActivity() {
                 // 每个 profile 跑独立任务，避免复用已有的 BrowserActivity 任务导致进程没起新
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
-            android.util.Log.e("FingerprintApp", "[DEBUG-launch] startActivity 已调用: $className")
         } catch (e: Exception) {
-        } catch (e: Exception) {
-            // [DEBUG] 启动浏览器失败时弹 Toast，把异常名打出来
-            android.util.Log.e("FingerprintApp", "[DEBUG-launch] 启动失败: $className", e)
+            android.util.Log.e("FingerprintApp", "启动浏览器失败: $className", e)
             android.widget.Toast.makeText(
                 this,
-                "启动失败: ${e::class.java.simpleName}: ${e.message}",
+                "启动失败: ${e.message}",
                 android.widget.Toast.LENGTH_LONG
             ).show()
         }
