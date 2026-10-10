@@ -176,7 +176,7 @@ fun ProfileListScreen(
                                         （无）
 
                                         ---
-                                        App 版本：v0.1.0
+                                        App 版本：v1.0
                                         手机：${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}
                                         Android：${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})
                                     """.trimIndent()
