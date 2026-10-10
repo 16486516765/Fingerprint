@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <application
+        android:name=".FingerprintApp"
+        android:allowBackup="true"
+        android:icon="@drawable/ic_launcher"
+        android:label="Fingerprint"
+        android:theme="@style/Theme.Fingerprint"
+        android:usesCleartextTraffic="false">
+        <!-- 主进程：Profile 列表 / 设置页 -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 浏览器进程 :wv0（slot 0 的本体声明） -->
+        <activity
+            android:name=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv0"
+            android:configChanges="orientation|screenSize|keyboardHidden" />
+
+        <!-- 浏览器进程 :wv1 ~ :wv5（通过 alias 复用同一个 BrowserActivity 类） -->
+        <activity-alias
+            android:name=".BrowserActivity1"
+            android:targetActivity=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv1" />
+        <activity-alias
+            android:name=".BrowserActivity2"
+            android:targetActivity=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv2" />
+        <activity-alias
+            android:name=".BrowserActivity3"
+            android:targetActivity=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv3" />
+        <activity-alias
+            android:name=".BrowserActivity4"
+            android:targetActivity=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv4" />
+        <activity-alias
+            android:name=".BrowserActivity5"
+            android:targetActivity=".BrowserActivity"
+            android:exported="false"
+            android:process=":wv5" />
+    </application>
+</manifest>

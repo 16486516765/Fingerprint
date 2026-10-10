@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 纯 Compose 应用，不需要 AppCompat 主题，直接用 framework 深色主题 -->
+    <style name="Theme.Fingerprint" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/bg_black</item>
+        <item name="android:statusBarColor">@color/bg_black</item>
+        <item name="android:navigationBarColor">@color/bg_black</item>
+    </style>
+</resources>
