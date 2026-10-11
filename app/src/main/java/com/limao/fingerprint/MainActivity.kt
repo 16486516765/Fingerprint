@@ -43,7 +43,7 @@ import kotlinx.coroutines.launch
 private val FingerprintColors = darkColorScheme(
     background = Color(0xFF000000),
     surface = Color(0xFF0A0E14),
-    primary = Color(0xFF2E9E5B),
+    primary = Color(0xFF2196F3),
     onBackground = Color.White,
     onSurface = Color.White
 )
@@ -282,7 +282,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         androidx.compose.material3.Text(
                             "导出成功，已复制到剪贴板，请妥善保存：",
                             fontSize = 13.sp,
-                            color = Color(0xFF4ADE80)
+                            color = Color(0xFF64B5F6)
                         )
                         androidx.compose.foundation.layout.Spacer(
                             modifier = Modifier.height(8.dp)

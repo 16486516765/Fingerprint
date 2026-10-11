@@ -86,10 +86,10 @@ private val BgColor = Color(0xFF0A0E14)
 private val CardColor = Color(0xFF151B24)
 
 /** 强调色：启动按钮 */
-private val AccentColor = Color(0xFF2E9E5B)
+private val AccentColor = Color(0xFF2196F3)
 
 /** 运行中胶囊绿 */
-private val RunningGreen = Color(0xFF1F7A44)
+private val RunningBlue = Color(0xFF1565C0)
 
 /**
  * Profile 列表页（首页）。
@@ -618,9 +618,9 @@ private fun ProfileCard(
 /** 状态胶囊：运行中（绿）/ 未启动（灰） */
 @Composable
 private fun StatusPill(isRunning: Boolean) {
-    val bg = if (isRunning) RunningGreen else Color(0xFF2A323E)
+    val bg = if (isRunning) RunningBlue else Color(0xFF2A323E)
     val text = if (isRunning) "运行中" else "未启动"
-    val dot = if (isRunning) Color(0xFF4ADE80) else Color(0xFF6B7684)
+    val dot = if (isRunning) Color(0xFF64B5F6) else Color(0xFF6B7684)
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))

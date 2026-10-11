@@ -65,7 +65,7 @@ import com.limao.fingerprint.data.generateFpSeed
 
 private val BgColor = Color(0xFF000000)
 private val CardColor = Color(0xFF151B24)
-private val AccentColor = Color(0xFF2E9E5B)
+private val AccentColor = Color(0xFF2196F3)
 private val DangerColor = Color(0xFFF87171)
 
 /**

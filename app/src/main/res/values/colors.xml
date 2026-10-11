@@ -2,5 +2,5 @@
 <resources>
     <color name="bg_black">#000000</color>
     <color name="surface_dark">#0A0E14</color>
-    <color name="accent_green">#2E9E5B</color>
+    <color name="accent_blue">#2196F3</color>
 </resources>

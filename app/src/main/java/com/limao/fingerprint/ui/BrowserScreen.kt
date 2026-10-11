@@ -94,7 +94,7 @@ import kotlinx.coroutines.launch
 private val BgColor = Color(0xFF000000)
 private val BarColor = Color(0xFF0A0E14)
 private val FieldColor = Color(0xFF1A212C)
-private val AccentColor = Color(0xFF2E9E5B)
+private val AccentColor = Color(0xFF2196F3)
 
 /** 输入的地址缺 scheme 时自动补 https:// */
 private fun normalizeUrl(input: String): String {
@@ -387,7 +387,7 @@ fun BrowserScreen(
                         modifier = Modifier
                             .size(8.dp)
                             .clip(CircleShape)
-                            .background(Color(0xFF4ADE80))
+                            .background(Color(0xFF64B5F6))
                     )
                     Text(
                         profile.name.ifBlank { "未命名" },
@@ -1167,7 +1167,7 @@ private fun ProxyStatusBadge(
         type == ProxyType.NONE -> "直连" to Color(0xFF9AA4B2)
         state is ProxySetupState.Failed -> "代理失败·已阻止加载" to Color(0xFFF87171)
         state is ProxySetupState.Applied ->
-            (if (type == ProxyType.SOCKS5) "SOCKS5 已配置" else "HTTP 已配置") to Color(0xFF4ADE80)
+            (if (type == ProxyType.SOCKS5) "SOCKS5 已配置" else "HTTP 已配置") to Color(0xFF64B5F6)
         else -> "代理配置中…" to Color(0xFFFBBF24)
     }
     // §4.1：徽章上直接显示 WebView 实测出口 IP
