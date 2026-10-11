@@ -84,6 +84,7 @@ fun ProfileSettingsScreen(
     profile: Profile?,
     onSave: (Profile, String, String) -> Unit,
     onDelete: (() -> Unit)?,
+    onClone: (() -> Unit)? = null,
     onNavigateBack: () -> Unit
 ) {
     val isNew = profile == null
@@ -645,6 +646,16 @@ fun ProfileSettingsScreen(
                     modifier = Modifier.fillMaxWidth()
                 ) {
                     Text("删除此 Profile", color = DangerColor, fontSize = 14.sp)
+                }
+            }
+
+            // §4.9 克隆按钮（仅编辑模式）：复制配置，生成新 fpSeed，不复制 Cookie
+            if (!isNew && onClone != null) {
+                TextButton(
+                    onClick = { onClone() },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("克隆此 Profile", color = Color(0xFF9AA4B2), fontSize = 14.sp)
                 }
             }
 

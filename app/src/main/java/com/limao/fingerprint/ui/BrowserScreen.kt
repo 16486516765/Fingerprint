@@ -552,15 +552,42 @@ fun BrowserScreen(
                         setSupportMultipleWindows(true)
                         javaScriptCanOpenWindowsAutomatically = true
                     }
-                    // 自定义 UA（非空才覆盖）
+                    // 自定义 UA（非空才覆盖）。§4.3：UA 模板里的 {WV} 替换为
+                    // WebView 实际版本，避免写死的 Chrome/120 暴露。
                     if (profile.userAgent.isNotBlank()) {
-                        settings.userAgentString = profile.userAgent
+                        settings.userAgentString = resolveUa(profile.userAgent)
                     }
                     // BUG-7：第三方 Cookie 默认禁用会导致 SSO 登录、验证码、
                     // 支付 iframe 等失效，默认开启
                     android.webkit.CookieManager.getInstance().let { cm ->
                         cm.setAcceptCookie(true)
                         cm.setAcceptThirdPartyCookies(this@apply, true)
+                    }
+                    // §4.3 指纹伪装：在 loadUrl 之前注册 DOCUMENT_START_SCRIPT，
+                    // 每个页面/iframe 最早执行。包含 WebRTC 禁用、Canvas 噪声、
+                    // WebGL 伪装、navigator/screen/时区伪装。
+                    if (FingerprintSpoof.isSupported()) {
+                        try {
+                            val seed = profile.fpSeed.takeIf { it != 0L }
+                                ?: System.currentTimeMillis()
+                            val script = FingerprintSpoof.buildScript(seed, profile.fpConfig)
+                            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(
+                                this@apply,
+                                script,
+                                setOf("*")
+                            )
+                            android.util.Log.i(
+                                "BrowserScreen",
+                                "指纹伪装脚本已注入 (seed=$seed)"
+                            )
+                        } catch (e: Exception) {
+                            android.util.Log.w("BrowserScreen", "指纹脚本注入失败", e)
+                        }
+                    } else {
+                        android.util.Log.w(
+                            "BrowserScreen",
+                            "WebView 不支持 DOCUMENT_START_SCRIPT，指纹伪装未生效"
+                        )
                     }
                     // 注意：代理设置不在这里做。ProxyController 是异步的，
                     // 由 LaunchedEffect(webViewCreated) 等待配置应用后再 loadUrl
@@ -1484,4 +1511,27 @@ private fun importCookies(context: Context, url: String, text: String): Int {
     }
     cm.flush()
     return count
+}
+
+/**
+ * §4.3：解析 UA 模板。{WV} 占位符替换为 WebView 实际主版本
+ * （如 Chrome/137.0.0.0），避免写死的旧版本号暴露。
+ */
+private fun resolveUa(uaTemplate: String): String {
+    if (!uaTemplate.contains(com.limao.fingerprint.data.DeviceTemplates.WV_PLACEHOLDER)) {
+        return uaTemplate
+    }
+    val version = try {
+        android.webkit.WebView.getCurrentWebViewPackage()
+            ?.versionName
+            ?.split(".")
+            ?.firstOrNull()
+            ?.toIntOrNull()
+    } catch (e: Exception) {
+        null
+    } ?: 120 // 取不到版本时回退到 120
+    return uaTemplate.replace(
+        com.limao.fingerprint.data.DeviceTemplates.WV_PLACEHOLDER,
+        "$version.0.0.0"
+    )
 }

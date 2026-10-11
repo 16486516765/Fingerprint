@@ -746,6 +746,32 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     },
+                    onClone = if (editing == null) null else ({
+                        // §4.9 克隆：复制配置，新 ID/slot/fpSeed，不复制 Cookie
+                        scope.launch {
+                            try {
+                                val cloned = editing.copy(
+                                    id = java.util.UUID.randomUUID().toString(),
+                                    slot = -1,
+                                    name = editing.name + "（副本）",
+                                    fpSeed = java.util.UUID.randomUUID().leastSignificantBits,
+                                    lastVisitedUrl = "",
+                                    createdAt = System.currentTimeMillis()
+                                )
+                                repository.addProfile(cloned)
+                                Toast.makeText(
+                                    this@MainActivity, "已克隆", Toast.LENGTH_SHORT
+                                ).show()
+                                screen = Screen.List
+                            } catch (e: NoFreeSlotException) {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "Profile 已达上限（6 个），请先删除不用的",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }),
                     onDelete = if (editing == null) null else ({
                         scope.launch {
                             val slot = editing.slot

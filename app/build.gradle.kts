@@ -15,8 +15,8 @@ android {
         // WebView.setDataDirectorySuffix 是 API 28 才有的，26/27 会崩，故最低 28
         minSdk = 28
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     buildTypes {
