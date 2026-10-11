@@ -340,6 +340,19 @@ fun ProfileSettingsScreen(
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
                     )
                 }
+                // P1-6：ProxyController 的 socks:// 规则不支持用户名密码认证
+                //（SOCKS5 认证是协议内协商，WebView 公开接口无此能力）。
+                // 带认证的 SOCKS5 明确标注不支持，而不是显示已连接。
+                if (proxyType == ProxyType.SOCKS5 &&
+                    (proxyUser.isNotBlank() || proxyPass.isNotBlank())
+                ) {
+                    Text(
+                        "⚠ 当前 WebView 接口不支持 SOCKS5 用户名密码认证，" +
+                            "填写的账号密码不会生效。如需认证请使用 HTTP 代理。",
+                        color = Color(0xFFFB923C),
+                        fontSize = 12.sp
+                    )
+                }
                 Text(
                     "提示：代理在 profile 独立进程内生效，一号一代理，互不干扰。",
                     color = Color(0xFF5A6675),

@@ -15,10 +15,11 @@ import kotlinx.coroutines.launch
 /**
  * 浏览器 Activity 壳，运行在 `:wvN` 独立进程（N = profile.slot，见 Manifest）。
  *
- * 注意多进程下的 DataStore：
- * DataStore 不支持多进程并发读写。这里 :wvN 进程只在启动时同步读一次
- * profile（主进程负责写），之后不再跨进程碰 DataStore，避免竞态。
- * profile 为空（被主进程删了）则直接 finish。
+ * 多进程 DataStore 说明（见问题10）：
+ * 本进程只在启动时同步读一次 profile，不再直接写 DataStore。
+ * lastVisitedUrl 写到 filesDir 下的 `pending_url_{profileId}.txt`，
+ * 主进程在 onResume 时读取并写入 DataStore 后删除文件。
+ * 文件名按 profile id 隔离，单写者，无并发问题。
  */
 open class BrowserActivity : ComponentActivity() {
 
@@ -27,6 +28,8 @@ open class BrowserActivity : ComponentActivity() {
     }
 
     private var profile by mutableStateOf<Profile?>(null)
+    /** 本进程内最后访问的 URL，finish 时写文件回传主进程 */
+    private var lastUrl: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -42,6 +45,7 @@ open class BrowserActivity : ComponentActivity() {
                 finish()
             } else {
                 profile = p
+                lastUrl = p.lastVisitedUrl
             }
         }
         setContent {
@@ -49,10 +53,24 @@ open class BrowserActivity : ComponentActivity() {
                 profile?.let {
                     BrowserScreen(
                         profile = it,
+                        onUrlChanged = { url -> lastUrl = url },
                         onNavigateBack = { finish() }
                     )
                 }
             }
         }
+    }
+
+    override fun finish() {
+        // 把最后访问的 URL 写文件，由主进程在 onResume 时回写 DataStore（见问题10）
+        val p = profile
+        if (p != null && lastUrl.isNotBlank() && lastUrl != p.lastVisitedUrl) {
+            try {
+                java.io.File(filesDir, "pending_url_${p.id}.txt").writeText(lastUrl)
+            } catch (e: Exception) {
+                android.util.Log.w("BrowserActivity", "写回 lastUrl 失败", e)
+            }
+        }
+        super.finish()
     }
 }

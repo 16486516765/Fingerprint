@@ -114,15 +114,20 @@ private sealed interface ProxySetupState {
 /**
  * 浏览器界面（运行在 :wvN 独立进程，由 BrowserActivity 承载）。
  *
- * @param profile 当前 profile（不可变快照；lastVisitedUrl 的持久化在内部处理）
+ * @param profile 当前 profile（不可变快照）
+ * @param onUrlChanged URL 变化时回调，由 BrowserActivity 回传主进程写入
+ *                    （本进程不直接写 DataStore，见问题10）
  * @param onNavigateBack 返回列表（BrowserActivity 负责 finish）
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
+fun BrowserScreen(
+    profile: Profile,
+    onUrlChanged: (String) -> Unit,
+    onNavigateBack: () -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val repository = remember { ProfileRepository.getInstance(context) }
 
     // WebView 持有：factory 只跑一次，跨 recomposition 复用
     var webView by remember { mutableStateOf<WebView?>(null) }
@@ -194,18 +199,18 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
         webView?.loadUrl(url)
     }
 
-    /** 页面加载完成：同步地址栏 + 持久化 lastVisitedUrl（只在变化时写库） */
+    /** 页面加载完成：同步地址栏 + 回调 URL（由主进程持久化，见问题10） */
+    // 记录上次已回调的 URL，避免重复回调（见问题14）
+    var lastReportedUrl by remember { mutableStateOf(profile.lastVisitedUrl) }
     fun onPageDone(url: String?) {
         val wv = webView ?: return
         canGoBack = wv.canGoBack()
         canGoForward = wv.canGoForward()
         if (!url.isNullOrBlank()) {
             if (!fieldFocused) urlText = url
-            if (url != profile.lastVisitedUrl && !url.startsWith("about:")) {
-                scope.launch {
-                    // 只更新 lastVisitedUrl 单个字段，带重试，不抛异常
-                    repository.updateLastVisitedUrl(profile.id, url)
-                }
+            if (url != lastReportedUrl && !url.startsWith("about:")) {
+                lastReportedUrl = url
+                onUrlChanged(url)
             }
         }
     }
@@ -368,12 +373,14 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                                     wv.clearCache(true)
                                     wv.clearHistory()
                                 }
-                                CookieManager.getInstance().removeAllCookies(null)
-                                CookieManager.getInstance().flush()
-                                WebStorage.getInstance().deleteAllData()
-                                Toast.makeText(
-                                    context, "已清除本 profile 的浏览数据", Toast.LENGTH_SHORT
-                                ).show()
+                                // P1-13：等 Cookie 删除回调完成再提示，不提前报成功
+                                CookieManager.getInstance().removeAllCookies { success ->
+                                    CookieManager.getInstance().flush()
+                                    WebStorage.getInstance().deleteAllData()
+                                    val msg = if (success) "已清除本 profile 的浏览数据"
+                                    else "Cookie 清除可能未完成，其他数据已清除"
+                                    Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                }
                             }
                         )
                         DropdownMenuItem(

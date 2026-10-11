@@ -22,8 +22,20 @@ private val KEY_PROFILE_LIST = stringPreferencesKey("profile_list_json")
 private val KEY_CREDENTIALS_MIGRATED =
     androidx.datastore.preferences.core.booleanPreferencesKey("credentials_migrated")
 
-/** 网站图标开关的 key（默认开；关闭后不请求 Google favicon 服务，保护隐私） */
+/** 网站图标开关的 key（默认关闭，隐私优先，见问题15） */
 private val KEY_FAVICON_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("favicon_enabled")
+
+/** 脏 slot 标记的 key：数据目录清理失败的 slot 不再分配（见问题11） */
+private val KEY_DIRTY_SLOTS =
+    androidx.datastore.preferences.core.stringSetPreferencesKey("dirty_slots")
+
+/** JSON 损坏备份的 key（见问题12） */
+private val KEY_PROFILE_LIST_BACKUP =
+    stringPreferencesKey("profile_list_json_backup")
+
+/** JSON 损坏标记的 key */
+private val KEY_PROFILE_LIST_CORRUPTED =
+    androidx.datastore.preferences.core.booleanPreferencesKey("profile_list_corrupted")
 
 /**
  * 最大 profile 数量。
@@ -52,9 +64,9 @@ class ProfileRepository private constructor(private val appContext: Context) {
     val profiles: Flow<List<Profile>> = appContext.profileDataStore.data
         .map { prefs -> readList(prefs[KEY_PROFILE_LIST]) }
 
-    /** 网站图标开关（默认 true） */
+    /** 网站图标开关（默认 false，隐私优先，见问题15） */
     val faviconEnabled: Flow<Boolean> = appContext.profileDataStore.data
-        .map { prefs -> prefs[KEY_FAVICON_ENABLED] ?: true }
+        .map { prefs -> prefs[KEY_FAVICON_ENABLED] ?: false }
 
     /** 设置网站图标开关 */
     suspend fun setFaviconEnabled(enabled: Boolean) {
@@ -65,18 +77,44 @@ class ProfileRepository private constructor(private val appContext: Context) {
 
     /**
      * 新增 profile，自动分配最小的空闲 slot（0 ~ MAX_PROFILES-1）。
+     * 脏 slot（数据目录清理失败，见问题11）跳过不分配。
      * slot 用满时抛出 NoFreeSlotException，调用方捕获后提示用户。
      */
     suspend fun addProfile(profile: Profile): Profile {
         var assigned: Profile? = null
+        val dirtySlots = getDirtySlots()
         mutate { list ->
             val usedSlots = list.map { it.slot }.toSet()
-            val freeSlot = (0 until MAX_PROFILES).firstOrNull { it !in usedSlots }
-                ?: throw NoFreeSlotException()
+            val freeSlot = (0 until MAX_PROFILES).firstOrNull {
+                it !in usedSlots && it !in dirtySlots
+            } ?: throw NoFreeSlotException()
             assigned = profile.copy(slot = freeSlot)
             list + assigned!!
         }
         return assigned!!
+    }
+
+    /** 获取脏 slot 集合（数据目录清理失败，不再分配） */
+    suspend fun getDirtySlots(): Set<Int> {
+        val prefs = appContext.profileDataStore.data.first()
+        return prefs[KEY_DIRTY_SLOTS]?.mapNotNull { it.toIntOrNull() }?.toSet() ?: emptySet()
+    }
+
+    /** 标记 slot 为脏（数据目录清理失败） */
+    suspend fun markSlotDirty(slot: Int) {
+        appContext.profileDataStore.edit { prefs ->
+            val current = prefs[KEY_DIRTY_SLOTS] ?: emptySet()
+            prefs[KEY_DIRTY_SLOTS] = current + slot.toString()
+        }
+        android.util.Log.w("ProfileRepository", "slot $slot 标记为脏，不再分配")
+    }
+
+    /** 脏 slot 清理成功后可清除标记（预留） */
+    suspend fun clearSlotDirty(slot: Int) {
+        appContext.profileDataStore.edit { prefs ->
+            val current = prefs[KEY_DIRTY_SLOTS] ?: emptySet()
+            prefs[KEY_DIRTY_SLOTS] = current - slot.toString()
+        }
     }
 
     /** 更新（按 id 匹配替换） */
@@ -115,19 +153,63 @@ class ProfileRepository private constructor(private val appContext: Context) {
     suspend fun getProfileById(id: String): Profile? =
         profiles.first().find { it.id == id }
 
-    /** 读取并解析 JSON，失败返回空列表（不崩溃） */
+    /** 读取并解析 JSON。区分"空配置"与"损坏"（见问题12）。 */
     private fun readList(json: String?): List<Profile> {
         if (json.isNullOrBlank()) return emptyList()
         return try {
             gson.fromJson<List<Profile>>(json, listType) ?: emptyList()
         } catch (e: Exception) {
+            android.util.Log.e("ProfileRepository", "Profile JSON 解析失败（已标记损坏，不覆盖原数据）", e)
+            // 标记损坏，由调用方决定是否备份；这里只返回空列表供 UI 显示
             emptyList()
         }
     }
 
-    /** 原子读写：读出 -> 变换 -> 写回 */
+    /**
+     * 检查 JSON 是否损坏（能读出非空字符串但解析失败）。
+     * 损坏时把原 JSON 备份到独立 key，不自动覆盖（见问题12）。
+     * @return true 已损坏并备份；false 正常或为空
+     */
+    suspend fun checkAndBackupCorrupted(): Boolean {
+        val prefs = appContext.profileDataStore.data.first()
+        val raw = prefs[KEY_PROFILE_LIST]
+        if (raw.isNullOrBlank()) return false
+        val corrupted = try {
+            gson.fromJson<List<Profile>>(raw, listType)
+            false
+        } catch (e: Exception) {
+            true
+        }
+        if (corrupted && prefs[KEY_PROFILE_LIST_CORRUPTED] != true) {
+            appContext.profileDataStore.edit { p ->
+                // 只备份一次，避免覆盖更早的备份
+                if (p[KEY_PROFILE_LIST_BACKUP].isNullOrBlank()) {
+                    p[KEY_PROFILE_LIST_BACKUP] = raw
+                }
+                p[KEY_PROFILE_LIST_CORRUPTED] = true
+            }
+            android.util.Log.w("ProfileRepository", "Profile JSON 已损坏，原数据已备份")
+        }
+        return corrupted
+    }
+
+    /** 清除损坏标记（用户确认恢复或手动修复后调用） */
+    suspend fun clearCorruptedFlag() {
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_PROFILE_LIST_CORRUPTED] = false
+        }
+    }
+
+    /** 原子读写：读出 -> 变换 -> 写回（损坏时拒绝覆盖，见问题12） */
     private suspend fun mutate(transform: (List<Profile>) -> List<Profile>) {
         appContext.profileDataStore.edit { prefs ->
+            if (prefs[KEY_PROFILE_LIST_CORRUPTED] == true) {
+                android.util.Log.w(
+                    "ProfileRepository",
+                    "JSON 已标记损坏，拒绝写入以防覆盖备份"
+                )
+                throw IllegalStateException("配置数据损坏已备份，请先恢复后再操作")
+            }
             val current = readList(prefs[KEY_PROFILE_LIST])
             val transformed = transform(current)
             // P0-4：永不将明文代理凭据写入 JSON。凭据只存 ProxyCredentialStore。

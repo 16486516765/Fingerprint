@@ -90,6 +90,37 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // 回收 :wvN 进程写下的 pending URL 文件，统一由主进程写 DataStore（见问题10）
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val pendingFiles = filesDir.listFiles { f ->
+                    f.name.startsWith("pending_url_") && f.name.endsWith(".txt")
+                } ?: emptyArray()
+                if (pendingFiles.isEmpty()) return@launch
+                val repository = ProfileRepository.getInstance(this@MainActivity)
+                for (file in pendingFiles) {
+                    try {
+                        val profileId = file.name
+                            .removePrefix("pending_url_")
+                            .removeSuffix(".txt")
+                        val url = file.readText().trim()
+                        if (profileId.isNotBlank() && url.isNotBlank()) {
+                            repository.updateLastVisitedUrl(profileId, url)
+                        }
+                    } catch (e: Exception) {
+                        android.util.Log.w("MainActivity", "处理 pending URL 失败: ${file.name}", e)
+                    } finally {
+                        file.delete()
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "回收 pending URL 失败", e)
+            }
+        }
+    }
+
     @Composable
     private fun MainNav() {
         var screen by remember { mutableStateOf<Screen>(Screen.List) }
@@ -155,15 +186,31 @@ class MainActivity : ComponentActivity() {
                     onDelete = if (editing == null) null else ({
                         scope.launch {
                             val slot = editing.slot
-                            repository.deleteProfile(editing.id)
+                            val profileId = editing.id
+                            // 先删配置
+                            repository.deleteProfile(profileId)
                             // 清除加密存储中的代理凭据
-                            ProxyCredentialStore.clear(this@MainActivity, editing.id)
-                            // 清理该 slot 的 WebView 数据目录（Cookie、缓存等）
-                            clearWebViewDataDir(slot)
+                            ProxyCredentialStore.clear(this@MainActivity, profileId)
+                            // IO 线程清理数据目录（见问题11）：确认进程退出后再删，
+                            // 检查删除结果，失败则标记脏 slot 不再复用
+                            val cleanResult = kotlinx.coroutines.withContext(
+                                kotlinx.coroutines.Dispatchers.IO
+                            ) {
+                                clearWebViewDataDir(slot)
+                            }
                             screen = Screen.List
-                            Toast.makeText(
-                                this@MainActivity, "已删除，浏览数据已清除", Toast.LENGTH_SHORT
-                            ).show()
+                            if (cleanResult) {
+                                Toast.makeText(
+                                    this@MainActivity, "已删除，浏览数据已清除",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            } else {
+                                Toast.makeText(
+                                    this@MainActivity,
+                                    "配置已删除，但浏览数据清理失败（slot $slot 已锁定不再分配）",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
                         }
                     }),
                     onNavigateBack = { screen = Screen.List }
@@ -207,33 +254,60 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 清理指定 slot 的 WebView 数据目录。
-     * 先尝试结束对应的 :wvN 进程，再递归删除 app_webview_fp_slot_N 目录。
+     * 清理指定 slot 的 WebView 数据目录（见问题11）。
+     * 必须在 IO 线程调用：
+     * 1. 结束对应的 :wvN 进程
+     * 2. 轮询确认进程确实退出（不用固定 sleep）
+     * 3. 递归删除 app_webview_fp_slot_N 目录并检查结果
+     * 4. 删除失败则标记脏 slot，addProfile 不再分配
+     * @return true 清理成功；false 失败（已标记脏 slot）
      */
-    private fun clearWebViewDataDir(slot: Int) {
-        if (slot < 0) return
-        try {
-            // 1. 结束对应的 :wvN 进程（避免文件被占用删不干净）
+    private suspend fun clearWebViewDataDir(slot: Int): Boolean {
+        if (slot < 0) return true
+        return try {
+            val repository = ProfileRepository.getInstance(this)
+            // 1. 结束对应的 :wvN 进程
             val targetSuffix = ":wv$slot"
             val am = getSystemService(android.content.Context.ACTIVITY_SERVICE)
                 as android.app.ActivityManager
+            var pidToWait: Int? = null
             for (proc in am.runningAppProcesses ?: emptyList()) {
                 if (proc.processName.endsWith(targetSuffix)) {
+                    pidToWait = proc.pid
                     android.os.Process.killProcess(proc.pid)
                     android.util.Log.i("FingerprintApp", "已结束进程 ${proc.processName}")
                     break
                 }
             }
-            // 给进程一点时间退出
-            Thread.sleep(300)
-            // 2. 删除数据目录
-            val dir = java.io.File(dataDir, "app_webview_fp_slot_$slot")
-            if (dir.exists()) {
-                val deleted = dir.deleteRecursively()
-                android.util.Log.i("FingerprintApp", "数据目录 ${dir.path} 删除: $deleted")
+            // 2. 轮询确认进程退出（最多等 3 秒，不用固定 sleep）
+            if (pidToWait != null) {
+                val deadline = System.currentTimeMillis() + 3000
+                while (System.currentTimeMillis() < deadline) {
+                    val stillAlive = am.runningAppProcesses?.any { it.pid == pidToWait } == true
+                    if (!stillAlive) break
+                    kotlinx.coroutines.delay(200)
+                }
             }
+            // 3. 删除数据目录并检查结果
+            val dir = java.io.File(dataDir, "app_webview_fp_slot_$slot")
+            val deleted = if (dir.exists()) {
+                val ok = dir.deleteRecursively()
+                android.util.Log.i("FingerprintApp", "数据目录 ${dir.path} 删除: $ok")
+                ok && !dir.exists()
+            } else {
+                true // 目录本就不存在，视为成功
+            }
+            // 4. 失败则标记脏 slot
+            if (!deleted) {
+                repository.markSlotDirty(slot)
+            }
+            deleted
         } catch (e: Exception) {
             android.util.Log.w("FingerprintApp", "清理数据目录失败", e)
+            try {
+                ProfileRepository.getInstance(this).markSlotDirty(slot)
+            } catch (_: Exception) { }
+            false
         }
     }
 }
