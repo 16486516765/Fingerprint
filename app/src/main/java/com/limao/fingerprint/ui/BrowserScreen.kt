@@ -186,21 +186,52 @@ fun BrowserScreen(
         profile.lastVisitedUrl.ifBlank { profile.homepageUrl }.ifBlank { "about:blank" }
     }
 
+    // §4.1 WebView 内真实出口检测：代理应用成功后，先在 WebView 里加载
+    // api.ipify.org 读出口 IP，再加载用户页面。测的是 WebView 真实出口，
+    // 不需要 Java 层直连（旧的 Java 测试已废弃）。
+    var egressIp by remember { mutableStateOf<String?>(null) }
+    var probingEgress by remember { mutableStateOf(false) }
+
     /**
      * 代理设置流程（见问题2、问题3）：
      * WebView 创建后，等待 ProxyController 配置真正应用，再 loadUrl。
      * 代理失败时 fail-closed：不加载，弹窗让用户选择"仍然直连"或返回。
+     *
+     * §4.6：SOCKS5 带用户名时走本地中继（LocalRelay），否则 Chromium
+     * 不支持 SOCKS 认证。relay 实例保存，Activity 销毁时 stop。
      */
+    var relay by remember { mutableStateOf<LocalRelay?>(null) }
     LaunchedEffect(webViewCreated) {
         if (!webViewCreated) return@LaunchedEffect
         val wv = webView ?: return@LaunchedEffect
-        val result = WebViewProxy.setProxyAsync(
-            profile.proxyType, profile.proxyHost, profile.proxyPort
-        )
+        // §4.6：SOCKS5 + 有用户名 → 本地中继
+        val (u, p) = if (profile.proxyType == ProxyType.SOCKS5) {
+            ProxyCredentialStore.load(context, profile.id)
+        } else {
+            "" to ""
+        }
+        val result: WebViewProxy.ProxySetupResult
+        if (profile.proxyType == ProxyType.SOCKS5 && u.isNotBlank()) {
+            val (r, newRelay) = WebViewProxy.setProxyViaRelayAsync(
+                profile.proxyType, profile.proxyHost, profile.proxyPort, u, p
+            )
+            result = r
+            relay = newRelay
+        } else {
+            result = WebViewProxy.setProxyAsync(
+                profile.proxyType, profile.proxyHost, profile.proxyPort
+            )
+        }
         when (result) {
             is WebViewProxy.ProxySetupResult.Applied -> {
                 proxyState = ProxySetupState.Applied
-                wv.loadUrl(initialUrl)
+                // §4.1：先探测 WebView 真实出口，再加载用户页面
+                if (profile.proxyType != ProxyType.NONE) {
+                    probingEgress = true
+                    wv.loadUrl("https://api.ipify.org")
+                } else {
+                    wv.loadUrl(initialUrl)
+                }
             }
             is WebViewProxy.ProxySetupResult.NotSupported -> {
                 proxyState = ProxySetupState.Failed("WebView 内核不支持代理覆盖")
@@ -333,7 +364,13 @@ fun BrowserScreen(
                         type = profile.proxyType,
                         state = proxyState,
                         host = profile.proxyHost,
-                        port = profile.proxyPort
+                        port = profile.proxyPort,
+                        egressIp = egressIp,
+                        onReprobe = {
+                            // §4.1：重新探测 WebView 出口
+                            probingEgress = true
+                            webView?.loadUrl("https://api.ipify.org")
+                        }
                     )
                 }
                 // 加载进度条
@@ -481,6 +518,19 @@ fun BrowserScreen(
 
                         override fun onPageFinished(view: WebView?, url: String?) {
                             progress = 1f
+                            // §4.1：出口探测页加载完成，读 IP 后再加载用户页面
+                            if (probingEgress && url?.startsWith("https://api.ipify.org") == true) {
+                                view?.evaluateJavascript("document.body.innerText") { raw ->
+                                    val ip = raw?.trim('"')?.trim()
+                                    if (!ip.isNullOrBlank()) {
+                                        egressIp = ip
+                                    }
+                                    probingEgress = false
+                                    // 探测完成，加载用户真正的页面
+                                    view.loadUrl(initialUrl)
+                                }
+                                return
+                            }
                             onPageDone(url)
                         }
 
@@ -510,17 +560,26 @@ fun BrowserScreen(
                             return false
                         }
 
-                        // 代理认证：只在认证 host 与配置的代理 host 精确一致时
-                        // 才自动提交凭据（见问题5）。删除了宽松的 endsWith 子域名
-                        // 匹配，防止钓鱼网站伪造认证框套取代理账号。
+                        // 代理认证：
+                        // 1) §4.6 本地中继：host=="127.0.0.1" 时用 ("fp", token)
+                        // 2) 普通 HTTP 代理：只在认证 host 与配置的代理 host 精确
+                        //    一致时才自动提交凭据（见问题5）。删除了宽松的 endsWith
+                        //    子域名匹配，防止钓鱼网站伪造认证框套取代理账号。
                         // 注意：HTTP 代理认证走这里；SOCKS5 的用户名密码是协议内
-                        // 协商，ProxyController 不支持，界面已明确标注（见问题6）。
+                        // 协商，ProxyController 不支持，无认证时走 socks5://，
+                        // 有认证时走本地中继（见 §4.6）。
                         override fun onReceivedHttpAuthRequest(
                             view: WebView?,
                             handler: HttpAuthHandler?,
                             host: String?,
                             realm: String?
                         ) {
+                            // §4.6：本地中继的认证（127.0.0.1）
+                            val activeRelay = relay
+                            if (host == "127.0.0.1" && activeRelay != null) {
+                                handler?.proceed("fp", activeRelay.token)
+                                return
+                            }
                             val isProxyAuth = host != null &&
                                 profile.proxyHost.isNotBlank() &&
                                 profile.proxyType == ProxyType.HTTP &&
@@ -723,7 +782,12 @@ fun BrowserScreen(
                 }
             },
             modifier = Modifier.fillMaxSize(),
-            onRelease = { it.destroy() }
+            onRelease = {
+                // §4.6：关闭本地中继，不留监听端口
+                relay?.stop()
+                relay = null
+                it.destroy()
+            }
         )
             // §4.4(d) 视频全屏覆盖层
             fullscreenView?.let { fv ->
@@ -838,22 +902,19 @@ fun BrowserScreen(
     }
 }
 
-/** 状态条右端的代理徽章，点击出诊断 + 手动连通性测试（见问题1、问题7） */
+/** 状态条右端的代理徽章，点击出诊断 + WebView 出口 IP（见 §4.1） */
 @Composable
 private fun ProxyStatusBadge(
     type: ProxyType,
     state: ProxySetupState,
     host: String,
-    port: Int
+    port: Int,
+    egressIp: String?,
+    onReprobe: () -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var showDialog by remember { mutableStateOf(false) }
     var diagnoseText by remember { mutableStateOf("") }
-    // 手动测试相关
-    var showTestConfirm by remember { mutableStateOf(false) }
-    var testing by remember { mutableStateOf(false) }
-    var testResult by remember { mutableStateOf<WebViewProxy.ProxyTestResult?>(null) }
 
     val (label, color) = when {
         type == ProxyType.NONE -> "直连" to Color(0xFF9AA4B2)
@@ -862,8 +923,14 @@ private fun ProxyStatusBadge(
             (if (type == ProxyType.SOCKS5) "SOCKS5 已配置" else "HTTP 已配置") to Color(0xFF4ADE80)
         else -> "代理配置中…" to Color(0xFFFBBF24)
     }
+    // §4.1：徽章上直接显示 WebView 实测出口 IP
+    val displayLabel = if (type != ProxyType.NONE && egressIp != null) {
+        "$label · $egressIp"
+    } else {
+        label
+    }
     Text(
-        label,
+        displayLabel,
         color = Color.White,
         fontSize = 11.sp,
         modifier = Modifier
@@ -871,7 +938,6 @@ private fun ProxyStatusBadge(
             .background(color.copy(alpha = 0.25f))
             .clickable {
                 diagnoseText = WebViewProxy.diagnose(host, port)
-                testResult = null
                 showDialog = true
             }
             .padding(horizontal = 8.dp, vertical = 3.dp)
@@ -886,77 +952,33 @@ private fun ProxyStatusBadge(
                     if (type != ProxyType.NONE) {
                         Spacer(Modifier.height(12.dp))
                         Text(
-                            "连通性测试为手动触发，不会自动运行。",
-                            fontSize = 12.sp,
+                            "—— WebView 真实出口 ——",
+                            fontSize = 13.sp,
+                            fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            if (egressIp != null) "出口 IP：$egressIp"
+                            else "尚未测得（页面加载时自动探测）",
+                            fontSize = 12.sp
+                        )
+                        Text(
+                            "这是 WebView 实际发请求的出口，不是 Java 层测试。",
+                            fontSize = 11.sp,
                             color = Color(0xFF9AA4B2)
                         )
                         Spacer(Modifier.height(8.dp))
-                        androidx.compose.material3.Button(
-                            onClick = { showTestConfirm = true },
-                            enabled = !testing
-                        ) {
-                            Text(if (testing) "测试中…" else "测试代理连通性")
-                        }
-                        testResult?.let { r ->
-                            Spacer(Modifier.height(8.dp))
-                            Text("—— Java 代理连通性测试 ——", fontSize = 12.sp)
-                            Text(
-                                "A. 配置已应用：${if (r.configApplied) "是" else "否"}",
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                "B. 代理连接：" + when (r.proxyReachable) {
-                                    true -> "成功（出口 IP 已变化）"
-                                    false -> "失败（${r.detail}）"
-                                    null -> "无法验证（${r.detail}）"
-                                },
-                                fontSize = 12.sp
-                            )
-                            Text(
-                                "C. WebView 实际出口：无法验证（Java 层测不到 WebView 流量）",
-                                fontSize = 12.sp,
-                                color = Color(0xFF9AA4B2)
-                            )
-                            if (r.directIp != null) {
-                                Text("直连 IP: ${r.directIp}", fontSize = 11.sp)
-                            }
-                            if (r.proxyIp != null) {
-                                Text("代理 IP: ${r.proxyIp}", fontSize = 11.sp)
-                            }
+                        androidx.compose.material3.Button(onClick = {
+                            showDialog = false
+                            onReprobe()
+                        }) {
+                            Text("重新检测出口")
                         }
                     }
                 }
             },
             confirmButton = {
                 TextButton(onClick = { showDialog = false }) { Text("关闭") }
-            }
-        )
-    }
-    // 测试前二次确认（见问题1）：明确告知会发起直连请求
-    if (showTestConfirm) {
-        AlertDialog(
-            onDismissRequest = { showTestConfirm = false },
-            title = { Text("确认测试") },
-            text = {
-                Text(
-                    "测试会先向 api.ipify.org 发起一次直连请求获取真实出口 IP，" +
-                        "再经代理请求一次做对比。直连请求会暴露你的真实 IP 给该服务。" +
-                        "继续吗？"
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    showTestConfirm = false
-                    testing = true
-                    scope.launch {
-                        val applied = state is ProxySetupState.Applied
-                        testResult = WebViewProxy.testProxyConnectivity(host, port, type, applied)
-                        testing = false
-                    }
-                }) { Text("继续测试") }
-            },
-            dismissButton = {
-                TextButton(onClick = { showTestConfirm = false }) { Text("取消") }
             }
         )
     }
