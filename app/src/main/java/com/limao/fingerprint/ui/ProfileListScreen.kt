@@ -84,8 +84,9 @@ private val RunningGreen = Color(0xFF1F7A44)
  * Profile 列表页（首页）。
  *
  * @param profiles 全部 profile
- * @param activeProfileId 当前正在浏览器中运行的 profile id（可空）
- * @param onLaunch 点击"启动"：打开该 profile 的浏览器
+ * @param runningProfileIds 正在运行（:wvN 进程存活）的 profile id 集合
+ * @param onLaunch 点击"启动"/"进入"：打开该 profile 的浏览器
+ * @param onKill 点击"关闭"：结束该 profile 的 :wvN 进程
  * @param onEdit 点击卡片（除按钮外）：进入设置页
  * @param onAdd 点击右上角 +：新建 profile
  */
@@ -93,10 +94,11 @@ private val RunningGreen = Color(0xFF1F7A44)
 @Composable
 fun ProfileListScreen(
     profiles: List<Profile>,
-    activeProfileId: String?,
+    runningProfileIds: Set<String>,
     faviconEnabled: Boolean,
     onFaviconToggle: (Boolean) -> Unit,
     onLaunch: (String) -> Unit,
+    onKill: (String) -> Unit,
     onEdit: (String) -> Unit,
     onAdd: () -> Unit
 ) {
@@ -343,9 +345,10 @@ fun ProfileListScreen(
                     items(filtered, key = { it.id }) { profile ->
                         ProfileCard(
                             profile = profile,
-                            isRunning = profile.id == activeProfileId,
+                            isRunning = profile.id in runningProfileIds,
                             faviconEnabled = faviconEnabled,
                             onLaunch = { onLaunch(profile.id) },
+                            onKill = { onKill(profile.id) },
                             onEdit = { onEdit(profile.id) }
                         )
                     }
@@ -388,6 +391,7 @@ private fun ProfileCard(
     isRunning: Boolean,
     faviconEnabled: Boolean,
     onLaunch: () -> Unit,
+    onKill: () -> Unit,
     onEdit: () -> Unit
 ) {
     Surface(
@@ -467,14 +471,23 @@ private fun ProfileCard(
 
             Spacer(Modifier.width(8.dp))
 
-            // 右侧：启动按钮
-            Button(
-                onClick = onLaunch,
-                colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
-                shape = RoundedCornerShape(12.dp),
-                contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
-            ) {
-                Text(if (isRunning) "进入" else "启动", fontSize = 14.sp)
+            // 右侧：运行中显示"进入"+"关闭"，未运行显示"启动"
+            Column(horizontalAlignment = Alignment.End) {
+                Button(
+                    onClick = onLaunch,
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentColor),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(horizontal = 18.dp, vertical = 10.dp)
+                ) {
+                    Text(if (isRunning) "进入" else "启动", fontSize = 14.sp)
+                }
+                // §4.10 运行状态：运行中可一键关闭进程
+                if (isRunning) {
+                    Spacer(Modifier.height(6.dp))
+                    TextButton(onClick = onKill) {
+                        Text("关闭", color = Color(0xFFF87171), fontSize = 13.sp)
+                    }
+                }
             }
         }
     }

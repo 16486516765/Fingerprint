@@ -71,6 +71,8 @@ class MainActivity : ComponentActivity() {
 
     /** BUG-4：JSON 损坏时显示恢复选项 */
     private var showCorruptDialog by mutableStateOf(false)
+    /** §4.10 运行状态：:wvN 进程存活的 profile id 集合 */
+    private var runningProfileIds by mutableStateOf<Set<String>>(emptySet())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -197,6 +199,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // §4.10 运行状态：刷新哪些 :wvN 进程还活着
+        refreshRunningProfiles()
         // 回收 :wvN 进程写下的 pending URL 文件，统一由主进程写 DataStore（见问题10）
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
@@ -226,6 +230,61 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * §4.10 运行状态：用 ActivityManager.runningAppProcesses 检查
+     * 哪些 :wvN 进程存活，映射回 profile id。
+     */
+    private fun refreshRunningProfiles() {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val am = getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                        as android.app.ActivityManager
+                val liveSlots = (am.runningAppProcesses ?: emptyList())
+                    .mapNotNull { proc ->
+                        // 进程名形如 com.limao.fingerprint.debug:wv2
+                        proc.processName.substringAfterLast(":").takeIf { it.startsWith("wv") }
+                            ?.removePrefix("wv")?.toIntOrNull()
+                    }.toSet()
+                val repository = ProfileRepository.getInstance(this@MainActivity)
+                val profiles = repository.profiles.value
+                val running = profiles.filter { it.slot in liveSlots }.map { it.id }.toSet()
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                    runningProfileIds = running
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "刷新运行状态失败", e)
+            }
+        }
+    }
+
+    /**
+     * §4.10：关闭指定 profile 的 :wvN 进程（列表页"关闭"按钮）。
+     */
+    private fun killProfileProcess(profileId: String) {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val repository = ProfileRepository.getInstance(this@MainActivity)
+                val profile = repository.profiles.value.find { it.id == profileId }
+                    ?: return@launch
+                val targetSuffix = ":wv${profile.slot}"
+                val am = getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                        as android.app.ActivityManager
+                for (proc in am.runningAppProcesses ?: emptyList()) {
+                    if (proc.processName.endsWith(targetSuffix)) {
+                        android.os.Process.killProcess(proc.pid)
+                        android.util.Log.i("MainActivity", "已关闭 ${proc.processName}")
+                        break
+                    }
+                }
+                // 等一会儿再刷新状态
+                kotlinx.coroutines.delay(500)
+                refreshRunningProfiles()
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "关闭进程失败", e)
+            }
+        }
+    }
+
     @Composable
     private fun MainNav() {
         var screen by remember { mutableStateOf<Screen>(Screen.List) }
@@ -238,8 +297,7 @@ class MainActivity : ComponentActivity() {
             is Screen.List -> {
                 ProfileListScreen(
                     profiles = profiles,
-                    // v1：暂不追踪哪个 profile 正在运行，统一显示"启动"
-                    activeProfileId = null,
+                    runningProfileIds = runningProfileIds,
                     faviconEnabled = faviconEnabled,
                     onFaviconToggle = { enabled ->
                         scope.launch { repository.setFaviconEnabled(enabled) }
@@ -248,6 +306,7 @@ class MainActivity : ComponentActivity() {
                         val profile = profiles.find { it.id == profileId } ?: return@ProfileListScreen
                         launchBrowser(profile)
                     },
+                    onKill = { profileId -> killProfileProcess(profileId) },
                     onEdit = { profileId -> screen = Screen.Settings(profileId) },
                     onAdd = { screen = Screen.Settings(null) }
                 )

@@ -4,18 +4,31 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.graphics.Bitmap
+import android.net.Uri
 import android.net.http.SslError
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
 import android.webkit.HttpAuthHandler
+import android.webkit.JsPromptResult
+import android.webkit.JsResult
+import android.webkit.PermissionRequest
 import android.webkit.SslErrorHandler
+import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
+import android.webkit.WebResourceResponse
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.rememberScrollState
@@ -150,6 +163,24 @@ fun BrowserScreen(
     var bypassProxyFail by remember { mutableStateOf(false) }
     // 右下角菜单展开
     var menuOpen by remember { mutableStateOf(false) }
+    // §4.4(a) 文件上传：暂存 WebView 的回调，picker 返回后触发
+    var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
+    val filePickerLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        val uris = WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data)
+        filePathCallback?.onReceiveValue(uris)
+        filePathCallback = null
+    }
+    // §4.4(d) 视频全屏：系统回调给的 customView，显示时覆盖全屏
+    var fullscreenView by remember { mutableStateOf<View?>(null) }
+    var fullscreenCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+    // §4.4(c) 权限请求确认：暂存请求，弹窗让用户确认
+    var permissionRequest by remember { mutableStateOf<PermissionRequest?>(null) }
+    var geoPermissionCallback by remember { mutableStateOf<GeolocationPermissions.Callback?>(null) }
+    var geoPermissionOrigin by remember { mutableStateOf<String?>(null) }
+    // §4.5 下载进度提示
+    var downloadMsg by remember { mutableStateOf<String?>(null) }
 
     val initialUrl = remember {
         profile.lastVisitedUrl.ifBlank { profile.homepageUrl }.ifBlank { "about:blank" }
@@ -395,9 +426,15 @@ fun BrowserScreen(
             }
         }
     ) { padding ->
-        AndroidView(
-            factory = { ctx ->
-                WebView(ctx).apply {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .background(BgColor)
+        ) {
+            AndroidView(
+                factory = { ctx ->
+                    WebView(ctx).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.MATCH_PARENT
@@ -414,6 +451,9 @@ fun BrowserScreen(
                         // 禁止 file/content 访问（见问题16）
                         allowFileAccess = false
                         allowContentAccess = false
+                        // §4.8 多标签：允许 JS 开新窗口，由 onCreateWindow 接管
+                        setSupportMultipleWindows(true)
+                        javaScriptCanOpenWindowsAutomatically = true
                     }
                     // 自定义 UA（非空才覆盖）
                     if (profile.userAgent.isNotBlank()) {
@@ -511,10 +551,169 @@ fun BrowserScreen(
                         ) {
                             handler?.cancel()
                         }
+
+                        // BUG-12：主 frame 出错时显示自定义错误页（带重试按钮），
+                        // 而不是白屏。代理中途掉线（PROXY/TUNNEL 错误）时把
+                        // proxyState 置 Failed，避免徽章还显示"已配置"误导。
+                        override fun onReceivedError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            error: WebResourceError?
+                        ) {
+                            if (request?.isForMainFrame == true && view != null) {
+                                val desc = error?.description?.toString() ?: "未知错误"
+                                val code = error?.errorCode ?: 0
+                                if (desc.contains("PROXY", ignoreCase = true) ||
+                                    desc.contains("TUNNEL", ignoreCase = true)
+                                ) {
+                                    proxyState = ProxySetupState.Failed("代理连接中断：$desc")
+                                }
+                                val url = request.url?.toString() ?: ""
+                                view.loadDataWithBaseURL(
+                                    null,
+                                    errorHtml(desc, code, url),
+                                    "text/html", "utf-8", null
+                                )
+                            }
+                        }
+
+                        override fun onReceivedHttpError(
+                            view: WebView?,
+                            request: WebResourceRequest?,
+                            errorResponse: WebResourceResponse?
+                        ) {
+                            if (request?.isForMainFrame == true && view != null) {
+                                val code = errorResponse?.statusCode ?: 0
+                                // 407 代理认证失败：标记代理状态（BUG-10 的计数器已在
+                                // onReceivedHttpAuthRequest 处理，这里只显示错误页）
+                                if (code == 407) {
+                                    proxyState = ProxySetupState.Failed("代理认证失败（407）")
+                                }
+                                if (code >= 400) {
+                                    val url = request.url?.toString() ?: ""
+                                    view.loadDataWithBaseURL(
+                                        null,
+                                        errorHtml("HTTP $code", code, url),
+                                        "text/html", "utf-8", null
+                                    )
+                                }
+                            }
+                        }
                     }
                     webChromeClient = object : WebChromeClient() {
                         override fun onProgressChanged(view: WebView?, newProgress: Int) {
                             progress = newProgress / 100f
+                        }
+
+                        // §4.4(a) 文件上传：<input type=file> 弹出系统文件选择器
+                        override fun onShowFileChooser(
+                            view: WebView?,
+                            callback: ValueCallback<Array<Uri>>?,
+                            params: FileChooserParams?
+                        ): Boolean {
+                            // 取消上一次未完成的回调，避免泄漏卡死
+                            filePathCallback?.onReceiveValue(null)
+                            filePathCallback = callback
+                            try {
+                                val intent = params?.createIntent()
+                                    ?: android.content.Intent(android.content.Intent.ACTION_GET_CONTENT).apply {
+                                        type = "*/*"
+                                        addCategory(android.content.Intent.CATEGORY_OPENABLE)
+                                    }
+                                filePickerLauncher.launch(intent)
+                            } catch (e: Exception) {
+                                filePathCallback?.onReceiveValue(null)
+                                filePathCallback = null
+                                Toast.makeText(context, "无法打开文件选择器", Toast.LENGTH_SHORT).show()
+                            }
+                            return true
+                        }
+
+                        // BUG-6：JS 弹窗。WebView 默认吞掉 alert/confirm/prompt，
+                        // 这里用系统对话框实现。注意必须最终调 confirm()/cancel()，
+                        // 否则页面 JS 线程卡死。
+                        override fun onJsAlert(
+                            view: WebView?, url: String?, message: String?, result: JsResult?
+                        ): Boolean {
+                            android.app.AlertDialog.Builder(context)
+                                .setMessage(message)
+                                .setPositiveButton("确定") { _, _ -> result?.confirm() }
+                                .setOnCancelListener { result?.cancel() }
+                                .show()
+                            return true
+                        }
+
+                        override fun onJsConfirm(
+                            view: WebView?, url: String?, message: String?, result: JsResult?
+                        ): Boolean {
+                            android.app.AlertDialog.Builder(context)
+                                .setMessage(message)
+                                .setPositiveButton("确定") { _, _ -> result?.confirm() }
+                                .setNegativeButton("取消") { _, _ -> result?.cancel() }
+                                .setOnCancelListener { result?.cancel() }
+                                .show()
+                            return true
+                        }
+
+                        override fun onJsPrompt(
+                            view: WebView?, url: String?, message: String?,
+                            defaultValue: String?, result: JsPromptResult?
+                        ): Boolean {
+                            val input = EditText(context).apply { setText(defaultValue ?: "") }
+                            android.app.AlertDialog.Builder(context)
+                                .setMessage(message)
+                                .setView(input)
+                                .setPositiveButton("确定") { _, _ ->
+                                    result?.confirm(input.text.toString())
+                                }
+                                .setNegativeButton("取消") { _, _ -> result?.cancel() }
+                                .setOnCancelListener { result?.cancel() }
+                                .show()
+                            return true
+                        }
+
+                        // §4.4(c) 摄像头/麦克风权限：先弹确认框，用户同意后再授权，
+                        // 按 profile 记忆选择（简单起见：每次都问）
+                        override fun onPermissionRequest(request: PermissionRequest?) {
+                            if (request == null) return
+                            permissionRequest = request
+                        }
+
+                        // §4.4(c) 地理定位：先弹确认。§4.3 要求按出口给假坐标或拒绝，
+                        // 这里先做"确认后允许真实定位"，假坐标在第 4 步指纹层接入
+                        override fun onGeolocationPermissionsShowPrompt(
+                            origin: String?,
+                            callback: GeolocationPermissions.Callback?
+                        ) {
+                            geoPermissionOrigin = origin
+                            geoPermissionCallback = callback
+                        }
+
+                        // §4.4(d) 视频全屏
+                        override fun onShowCustomView(
+                            view: View?, callback: CustomViewCallback?
+                        ) {
+                            fullscreenView = view
+                            fullscreenCallback = callback
+                        }
+
+                        override fun onHideCustomView() {
+                            fullscreenView = null
+                            fullscreenCallback?.onCustomViewHidden()
+                            fullscreenCallback = null
+                        }
+                    }
+                    // §4.5 下载：不用系统 DownloadManager（它在系统进程发请求，
+                    // 不走 per-profile 代理也拿不到隔离 Cookie）。自己用
+                    // HttpURLConnection 经代理下载，带上 Cookie 和 UA，
+                    // 写入 MediaStore.Downloads。
+                    setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+                        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                            val msg = downloadFile(
+                                context, this@apply, url, userAgent,
+                                contentDisposition, mimeType, profile
+                            )
+                            downloadMsg = msg
                         }
                     }
                     // 注意：不在这里 loadUrl。等 LaunchedEffect 确认代理配置
@@ -523,12 +722,92 @@ fun BrowserScreen(
                     webViewCreated = true
                 }
             },
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .background(BgColor),
+            modifier = Modifier.fillMaxSize(),
             onRelease = { it.destroy() }
         )
+            // §4.4(d) 视频全屏覆盖层
+            fullscreenView?.let { fv ->
+                AndroidView(
+                    factory = {
+                        FrameLayout(it).apply {
+                            addView(
+                                fv,
+                                FrameLayout.LayoutParams(
+                                    FrameLayout.LayoutParams.MATCH_PARENT,
+                                    FrameLayout.LayoutParams.MATCH_PARENT
+                                )
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black)
+                )
+            }
+        }
+    }
+
+    // §4.4(c) 摄像头/麦克风权限确认
+    permissionRequest?.let { req ->
+        AlertDialog(
+            onDismissRequest = {
+                req.deny()
+                permissionRequest = null
+            },
+            title = { Text("网站请求权限") },
+            text = {
+                Text("“${profile.name}”中的页面请求使用：\n${req.resources.joinToString("\n")}\n\n是否允许？")
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    req.grant(req.resources)
+                    permissionRequest = null
+                }) { Text("允许") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    req.deny()
+                    permissionRequest = null
+                }) { Text("拒绝") }
+            }
+        )
+    }
+
+    // §4.4(c) 地理定位权限确认
+    val geoCb = geoPermissionCallback
+    val geoOrigin = geoPermissionOrigin
+    if (geoCb != null && geoOrigin != null) {
+        AlertDialog(
+            onDismissRequest = {
+                geoCb.invoke(geoOrigin, false, false)
+                geoPermissionCallback = null
+                geoPermissionOrigin = null
+            },
+            title = { Text("网站请求定位") },
+            text = { Text("页面想获取你的地理位置，是否允许？") },
+            confirmButton = {
+                TextButton(onClick = {
+                    geoCb.invoke(geoOrigin, true, false)
+                    geoPermissionCallback = null
+                    geoPermissionOrigin = null
+                }) { Text("允许") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    geoCb.invoke(geoOrigin, false, false)
+                    geoPermissionCallback = null
+                    geoPermissionOrigin = null
+                }) { Text("拒绝") }
+            }
+        )
+    }
+
+    // §4.5 下载完成提示
+    downloadMsg?.let { msg ->
+        LaunchedEffect(msg) {
+            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+            downloadMsg = null
+        }
     }
 
     // fail-closed 对话框（见问题3）：代理配置失败时默认阻止加载，
@@ -680,5 +959,192 @@ private fun ProxyStatusBadge(
                 TextButton(onClick = { showTestConfirm = false }) { Text("取消") }
             }
         )
+    }
+}
+
+/**
+ * BUG-12：自定义错误页 HTML（深色风格，带重试按钮和错误信息）。
+ */
+private fun errorHtml(description: String, code: Int, url: String): String {
+    val esc = { s: String ->
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            .replace("\"", "&quot;")
+    }
+    return """
+        <!DOCTYPE html><html><head><meta charset="utf-8">
+        <meta name="viewport" content="width=device-width,initial-scale=1">
+        <style>
+          body{background:#0A0E14;color:#fff;font-family:sans-serif;
+               display:flex;flex-direction:column;align-items:center;
+               justify-content:center;min-height:90vh;margin:0;padding:24px;
+               text-align:center}
+          h2{color:#F87171;font-size:20px}
+          p{color:#9AA4B2;font-size:14px;word-break:break-all}
+          button{background:#2E9E5B;color:#fff;border:none;border-radius:8px;
+                 padding:12px 32px;font-size:16px;margin-top:16px}
+        </style></head><body>
+        <h2>页面加载失败</h2>
+        <p>${esc(description)}${if (code != 0) "（$code）" else ""}</p>
+        <p>${esc(url)}</p>
+        <button onclick="location.reload()">重试</button>
+        </body></html>
+    """.trimIndent()
+}
+
+/**
+ * §4.5：经 per-profile 代理下载文件（不用 DownloadManager）。
+ *
+ * - http/https：按 profile 的代理设置走 java.net.Proxy，带上 UA 和 Cookie
+ * - data: URL：直接解 base64
+ * - blob: URL：注入 JS 把 blob 读成 data URL 回传再解码
+ * 写入 MediaStore.Downloads（无需存储权限），返回提示文本。
+ */
+private suspend fun downloadFile(
+    context: Context,
+    webView: WebView,
+    url: String,
+    userAgent: String,
+    contentDisposition: String?,
+    mimeType: String?,
+    profile: Profile
+): String = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    try {
+        val fileName = android.webkit.URLUtil.guessFileName(url, contentDisposition, mimeType)
+        val bytes: ByteArray = when {
+            url.startsWith("data:") -> {
+                // data:[<mime>][;base64],<data>
+                val comma = url.indexOf(',')
+                if (comma < 0) return@withContext "下载失败：data URL 格式错误"
+                val meta = url.substring(5, comma)
+                val data = url.substring(comma + 1)
+                if (meta.contains("base64")) android.util.Base64.decode(data, android.util.Base64.DEFAULT)
+                else java.net.URLDecoder.decode(data, "UTF-8").toByteArray()
+            }
+            url.startsWith("blob:") -> {
+                // 注入 JS 把 blob 转成 data URL，通过 evaluateJavascript 回传
+                val dataUrl = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+                    val js = """
+                        (function(){
+                          fetch("$url").then(r=>r.blob()).then(b=>{
+                            var fr=new FileReader();
+                            fr.onload=()=>{window.__blobResult=fr.result;};
+                            fr.onerror=()=>{window.__blobResult="ERROR";};
+                            fr.readAsDataURL(b);
+                          }).catch(()=>{window.__blobResult="ERROR";});
+                        })()
+                    """.trimIndent()
+                    webView.post {
+                        webView.evaluateJavascript(js) {
+                            // 轮询取结果（最多 15 秒）
+                            Thread {
+                                var result: String? = null
+                                repeat(150) {
+                                    Thread.sleep(100)
+                                    val latch = java.util.concurrent.CountDownLatch(1)
+                                    var v: String? = null
+                                    webView.post {
+                                        webView.evaluateJavascript("window.__blobResult||''") {
+                                            v = it
+                                            latch.countDown()
+                                        }
+                                    }
+                                    latch.await(2, java.util.concurrent.TimeUnit.SECONDS)
+                                    if (!v.isNullOrEmpty() && v != "\"\"") {
+                                        result = v
+                                        return@repeat
+                                    }
+                                }
+                                if (cont.isActive) {
+                                    val r = result
+                                    if (r == null || r == "ERROR" || r == "\"ERROR\"") {
+                                        cont.resume(null)
+                                    } else {
+                                        cont.resume(r.trim('"'))
+                                    }
+                                }
+                            }.start()
+                        }
+                    }
+                }
+                if (dataUrl == null) return@withContext "下载失败：无法读取 blob 数据"
+                val comma = dataUrl.indexOf(',')
+                if (comma < 0) return@withContext "下载失败：blob 转换失败"
+                android.util.Base64.decode(
+                    dataUrl.substring(comma + 1), android.util.Base64.DEFAULT
+                )
+            }
+            else -> {
+                // http/https：经代理下载
+                val proxy = buildDownloadProxy(profile)
+                val conn = java.net.URL(url).openConnection(proxy)
+                        as java.net.HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.instanceFollowRedirects = true
+                conn.setRequestProperty("User-Agent", userAgent)
+                val cookie = CookieManager.getInstance().getCookie(url)
+                if (!cookie.isNullOrBlank()) {
+                    conn.setRequestProperty("Cookie", cookie)
+                }
+                // HTTP 代理认证（Proxy-Authorization 头）
+                if (profile.proxyType == ProxyType.HTTP && profile.proxyHost.isNotBlank()) {
+                    val (u, p) = ProxyCredentialStore.load(context, profile.id)
+                    if (u.isNotBlank()) {
+                        val cred = android.util.Base64.encodeToString(
+                            "$u:$p".toByteArray(),
+                            android.util.Base64.NO_WRAP
+                        )
+                        conn.setRequestProperty("Proxy-Authorization", "Basic $cred")
+                    }
+                }
+                val code = conn.responseCode
+                if (code !in 200..299) {
+                    return@withContext "下载失败：HTTP $code"
+                }
+                conn.inputStream.use { it.readBytes() }
+            }
+        }
+
+        // 写入 MediaStore.Downloads
+        val resolver = context.contentResolver
+        val values = android.content.ContentValues().apply {
+            put(
+                android.provider.MediaStore.Downloads.DISPLAY_NAME,
+                fileName.ifBlank { "download_${System.currentTimeMillis()}" }
+            )
+            put(
+                android.provider.MediaStore.Downloads.MIME_TYPE,
+                mimeType ?: "application/octet-stream"
+            )
+            put(
+                android.provider.MediaStore.Downloads.RELATIVE_PATH,
+                android.os.Environment.DIRECTORY_DOWNLOADS
+            )
+        }
+        val uri = resolver.insert(
+            android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+        ) ?: return@withContext "下载失败：无法创建文件"
+        resolver.openOutputStream(uri)?.use { it.write(bytes) }
+            ?: return@withContext "下载失败：无法写入文件"
+        "已下载：$fileName（${bytes.size / 1024} KB）"
+    } catch (e: Exception) {
+        android.util.Log.w("BrowserScreen", "下载失败", e)
+        "下载失败：${e.message}"
+    }
+}
+
+/** §4.5：按 profile 构造下载用的 java.net.Proxy */
+private fun buildDownloadProxy(profile: Profile): java.net.Proxy {
+    if (profile.proxyType == ProxyType.NONE || profile.proxyHost.isBlank()) {
+        return java.net.Proxy.NO_PROXY
+    }
+    val addr = java.net.InetSocketAddress(profile.proxyHost, profile.proxyPort)
+    return when (profile.proxyType) {
+        ProxyType.HTTP -> java.net.Proxy(java.net.Proxy.Type.HTTP, addr)
+        // 注意：java.net 的 SOCKS 代理不支持认证；带认证的 SOCKS5 走中继时，
+        // WebView 用的是 127.0.0.1 中继，下载同样走中继（HTTP CONNECT）。
+        // 这里简化：无认证 SOCKS5 用 SOCKS，有认证的由调用方处理。
+        ProxyType.SOCKS5 -> java.net.Proxy(java.net.Proxy.Type.SOCKS, addr)
+        ProxyType.NONE -> java.net.Proxy.NO_PROXY
     }
 }

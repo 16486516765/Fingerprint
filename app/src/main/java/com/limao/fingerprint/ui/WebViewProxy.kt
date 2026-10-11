@@ -10,6 +10,7 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.net.URL
+import java.util.UUID
 import java.util.concurrent.Executor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -125,6 +126,54 @@ object WebViewProxy {
             Log.w(TAG, "代理设置失败", e)
             ProxySetupResult.Failed(e.message ?: "未知错误")
         }
+    }
+
+    /**
+     * §4.6 本地中继：SOCKS5 带用户名密码时走这条路（Chromium ProxyController
+     * 不支持 SOCKS 认证，见 LocalRelay）。
+     *
+     * 逻辑：随机 token 创建 LocalRelay → start() → WebView 代理指向
+     * HTTP "127.0.0.1:relay.port"（走现有 setProxyAsync）→ 中继用 SOCKS5+
+     * RFC1929 认证连上游。WebView 侧在 onReceivedHttpAuthRequest 里
+     * host=="127.0.0.1" 时 proceed("fp", relay.token)。
+     *
+     * 只在 SOCKS5 带用户名时用；无认证 SOCKS5 和 HTTP 请走原 setProxyAsync。
+     *
+     * @return Pair(设置结果, 中继实例)。成功时调用方负责在 Activity 销毁时
+     *         relay.stop()；失败时中继已由本方法自行 stop()，返回 null。
+     */
+    suspend fun setProxyViaRelayAsync(
+        type: ProxyType,
+        host: String,
+        port: Int,
+        username: String,
+        password: String
+    ): Pair<ProxySetupResult, LocalRelay?> {
+        if (type != ProxyType.SOCKS5) {
+            return ProxySetupResult.InvalidArgs("本地中继只用于 SOCKS5（type=$type）") to null
+        }
+        if (username.isBlank()) {
+            return ProxySetupResult.InvalidArgs("无用户名时请走普通 SOCKS5 逻辑") to null
+        }
+        if (host.isBlank() || port !in 1..65535) {
+            return ProxySetupResult.InvalidArgs("上游代理地址无效") to null
+        }
+        val token = UUID.randomUUID().toString().replace("-", "")
+        val relay = try {
+            LocalRelay(host, port, username, password, token)
+        } catch (e: Exception) {
+            Log.w(TAG, "本地中继创建失败", e)
+            return ProxySetupResult.Failed("本地中继创建失败: ${e.message}") to null
+        }
+        relay.start()
+        val result = setProxyAsync(ProxyType.HTTP, "127.0.0.1", relay.port)
+        if (result is ProxySetupResult.Applied) {
+            Log.i(TAG, "SOCKS5 认证已走本地中继: 127.0.0.1:${relay.port} -> socks5://$host:$port (user=$username)")
+            return result to relay
+        }
+        // 代理配置失败：自己关掉中继，不留监听端口
+        relay.stop()
+        return result to null
     }
 
     /**
