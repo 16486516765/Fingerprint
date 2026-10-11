@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 浏览器进入：淡入 + 轻微右滑（250ms，decelerate = ease-out） -->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/decelerate_quad">
+    <alpha
+        android:fromAlpha="0.0"
+        android:toAlpha="1.0"
+        android:duration="250" />
+    <translate
+        android:fromXDelta="6%"
+        android:toXDelta="0%"
+        android:duration="250" />
+</set>

@@ -660,6 +660,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         // §4.9 导出/导入对话框状态
         var showExportDialog by remember { mutableStateOf(false) }
         var showImportDialog by remember { mutableStateOf(false) }
+        // 动效4：正在播放退出动画的 profile id（删除时先播 200ms 动画再真正删数据）
+        var exitingProfileId by remember { mutableStateOf<String?>(null) }
 
         when (val s = screen) {
             is Screen.List -> {
@@ -713,7 +715,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     onEdit = { profileId -> screen = Screen.Settings(profileId) },
                     onAdd = { screen = Screen.Settings(null) },
                     onExportAll = { showExportDialog = true },
-                    onImport = { showImportDialog = true }
+                    onImport = { showImportDialog = true },
+                    exitingProfileId = exitingProfileId
                 )
                 // §4.9 导出/导入对话框
                 if (showExportDialog) {
@@ -796,6 +799,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         scope.launch {
                             val slot = editing.slot
                             val profileId = editing.id
+                            // 动效4：先播 200ms 退出动画，再真正删数据
+                            exitingProfileId = profileId
+                            screen = Screen.List
+                            kotlinx.coroutines.delay(220)
                             // 先删配置
                             repository.deleteProfile(profileId)
                             // 清除加密存储中的代理凭据
@@ -807,7 +814,7 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                             ) {
                                 clearWebViewDataDir(slot)
                             }
-                            screen = Screen.List
+                            exitingProfileId = null
                             if (cleanResult) {
                                 Toast.makeText(
                                     this@MainActivity, "已删除，浏览数据已清除",
@@ -852,6 +859,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 // 每个 profile 跑独立任务，避免复用已有的 BrowserActivity 任务导致进程没起新
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             startActivity(intent)
+            // 动效3：启动浏览器转场（淡入 + 轻微右滑，250ms ease-out）
+            overridePendingTransition(R.anim.browser_enter, R.anim.main_exit)
         } catch (e: Exception) {
             android.util.Log.e("FingerprintApp", "启动浏览器失败: $className", e)
             android.widget.Toast.makeText(

@@ -1,7 +1,16 @@
 package com.limao.fingerprint.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearOutSlowInEasing
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -16,7 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,6 +55,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -106,7 +117,9 @@ fun ProfileListScreen(
     onEdit: (String) -> Unit,
     onAdd: () -> Unit,
     onExportAll: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    /** 正在播放退出动画的 profile id（删除时先播动画再真正移除） */
+    exitingProfileId: String? = null
 ) {
     val context = LocalContext.current
     // 右上角菜单与崩溃日志对话框
@@ -401,15 +414,48 @@ fun ProfileListScreen(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    items(filtered, key = { it.id }) { profile ->
-                        ProfileCard(
-                            profile = profile,
-                            isRunning = profile.id in runningProfileIds,
-                            faviconEnabled = faviconEnabled,
-                            onLaunch = { onLaunch(profile.id) },
-                            onKill = { onKill(profile.id) },
-                            onEdit = { onEdit(profile.id) }
+                    itemsIndexed(filtered, key = { _, it -> it.id }) { index, profile ->
+                        // 动效2：列表入场 stagger（alpha 0→1 + 上移 8dp→0，每项延迟 50ms 上限 300ms）。
+                        // remember 绑定 key，滚动复用/返回列表时不重播。
+                        var enterVisible by remember(profile.id) { mutableStateOf(false) }
+                        LaunchedEffect(profile.id) {
+                            kotlinx.coroutines.delay((index * 50).coerceAtMost(300).toLong())
+                            enterVisible = true
+                        }
+                        val enterAlpha by animateFloatAsState(
+                            targetValue = if (enterVisible) 1f else 0f,
+                            animationSpec = tween(250, easing = LinearOutSlowInEasing),
+                            label = "enterAlpha"
                         )
+                        val enterOffsetY by animateDpAsState(
+                            targetValue = if (enterVisible) 0.dp else 8.dp,
+                            animationSpec = tween(250, easing = LinearOutSlowInEasing),
+                            label = "enterOffsetY"
+                        )
+                        // 动效4：删除退出（alpha→0 + scale 0.97，200ms ease-out）。
+                        // exitingProfileId 置位后播退出动画，动画播完 MainActivity 才真正删数据。
+                        AnimatedVisibility(
+                            visible = profile.id != exitingProfileId,
+                            exit = fadeOut(
+                                animationSpec = tween(200, easing = LinearOutSlowInEasing)
+                            ) + scaleOut(
+                                targetScale = 0.97f,
+                                animationSpec = tween(200, easing = LinearOutSlowInEasing)
+                            )
+                        ) {
+                            ProfileCard(
+                                profile = profile,
+                                isRunning = profile.id in runningProfileIds,
+                                faviconEnabled = faviconEnabled,
+                                onLaunch = { onLaunch(profile.id) },
+                                onKill = { onKill(profile.id) },
+                                onEdit = { onEdit(profile.id) },
+                                modifier = Modifier.graphicsLayer {
+                                    alpha = enterAlpha
+                                    translationY = enterOffsetY.toPx()
+                                }
+                            )
+                        }
                     }
                     item { Spacer(Modifier.height(16.dp)) }
                 }
@@ -451,14 +497,31 @@ private fun ProfileCard(
     faviconEnabled: Boolean,
     onLaunch: () -> Unit,
     onKill: () -> Unit,
-    onEdit: () -> Unit
+    onEdit: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
+    // 动效1：卡片按压缩放（scale 0.97，150ms ease-out）。只动 transform，不动 layout。
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.97f else 1f,
+        animationSpec = tween(150, easing = LinearOutSlowInEasing),
+        label = "pressScale"
+    )
     Surface(
         color = CardColor,
         shape = RoundedCornerShape(16.dp),
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onEdit)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            }
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onEdit
+            )
     ) {
         Row(
             modifier = Modifier
