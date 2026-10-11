@@ -73,4 +73,22 @@ open class BrowserActivity : ComponentActivity() {
         }
         super.finish()
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        // BUG-1：:wvN 进程的 DataStore 是内存缓存，Activity finish 后进程不死，
+        // 下次启动复用进程会读到旧配置（代理/UA/凭据全是旧的）。
+        // 关闭浏览器时直接结束本进程，下次启动必然是新进程读到最新配置。
+        if (isFinishing) {
+            try {
+                android.webkit.CookieManager.getInstance().flush()
+            } catch (e: Exception) {
+                android.util.Log.w("BrowserActivity", "Cookie flush 失败", e)
+            }
+            // 给 flush 一点时间落盘再杀，避免丢 Cookie
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                android.os.Process.killProcess(android.os.Process.myPid())
+            }, 400)
+        }
+    }
 }
