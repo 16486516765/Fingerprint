@@ -195,17 +195,26 @@ fun ProfileListScreen(
                             )
                             DropdownMenuItem(
                                 text = {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        modifier = Modifier.fillMaxWidth()
-                                    ) {
+                                    Column(modifier = Modifier.fillMaxWidth()) {
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.fillMaxWidth()
+                                        ) {
+                                            Text(
+                                                "加载网站图标",
+                                                modifier = Modifier.weight(1f)
+                                            )
+                                            Switch(
+                                                checked = faviconEnabled,
+                                                onCheckedChange = { onFaviconToggle(it) }
+                                            )
+                                        }
+                                        // P1/P2-15：明确告知隐私影响，默认关闭
                                         Text(
-                                            "加载网站图标",
-                                            modifier = Modifier.weight(1f)
-                                        )
-                                        Switch(
-                                            checked = faviconEnabled,
-                                            onCheckedChange = { onFaviconToggle(it) }
+                                            "开启后会向 Google favicon 服务请求图标，" +
+                                                "URL 中包含网站域名（隐私优先默认关闭）",
+                                            fontSize = 11.sp,
+                                            color = Color(0xFF9AA4B2)
                                         )
                                     }
                                 },

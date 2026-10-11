@@ -443,10 +443,22 @@ fun BrowserScreen(
                             }
                         }
 
-                        // 站内跳转留在 WebView 里，不抛给外部浏览器
+                        // 站内跳转留在 WebView 里，不抛给外部浏览器。
+                        // 重定向同样走 scheme 白名单（见问题16）。
                         override fun shouldOverrideUrlLoading(
                             view: WebView?, request: WebResourceRequest?
-                        ): Boolean = false
+                        ): Boolean {
+                            val url = request?.url?.toString() ?: return false
+                            if (!isAllowedScheme(url)) {
+                                Toast.makeText(
+                                    context,
+                                    "已阻止不支持的链接类型",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                                return true // 拦截，不加载
+                            }
+                            return false
+                        }
 
                         // 代理认证：只在认证 host 与配置的代理 host 精确一致时
                         // 才自动提交凭据（见问题5）。删除了宽松的 endsWith 子域名
