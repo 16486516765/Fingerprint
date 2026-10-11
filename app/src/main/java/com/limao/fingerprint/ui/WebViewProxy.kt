@@ -10,113 +10,228 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.Socket
 import java.net.URL
+import java.util.concurrent.Executor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 /**
  * WebView 进程级代理设置（AndroidX WebKit ProxyController 公开接口）。
  *
  * 每个 profile 独占一个 :wvN 进程，ProxyController 是进程级的，
- * 在对应进程内调用即天然实现 per-profile 代理，无需反射。
+ * 在对应进程内调用即天然实现 per-profile 代理。各 :wvN 进程的代理
+ * 设置互不影响（进程隔离，见问题8）。
  *
- * - HTTP  → ProxyConfig "http://host:port"
+ * - HTTP   → ProxyConfig "http://host:port"
  * - SOCKS5 → ProxyConfig "socks://host:port"（官方文档确认 scheme 支持 SOCKS）
  * - 直连   → clearProxyOverride() 明确清除，不残留旧代理
  *
- * 必须在主线程、WebView 创建后、loadUrl 前调用。
+ * 注意 ProxyController.setProxyOverride()/clearProxyOverride() 是异步的：
+ * 必须等待完成回调确认配置已应用，才能 loadUrl（见问题2）。
+ * 本文件的 setProxyAsync()/clearProxyAsync() 封装为 suspend 函数，
+ * 区分"设置已提交"和"配置已应用"两种状态。
  */
 object WebViewProxy {
 
     private const val TAG = "WebViewProxy"
+
+    /** 直接在调用线程跑回调的 Executor（调用方保证在主线程调用） */
+    private val directExecutor = Executor { it.run() }
+
+    /** 代理设置结果：区分"已应用"与各种失败原因（见问题2、问题3） */
+    sealed interface ProxySetupResult {
+        /** 配置已应用（或直连已清除旧代理） */
+        data object Applied : ProxySetupResult
+        /** WebView 内核不支持 PROXY_OVERRIDE */
+        data object NotSupported : ProxySetupResult
+        /** 参数无效 */
+        data class InvalidArgs(val reason: String) : ProxySetupResult
+        /** 设置失败（回调明确失败或异常） */
+        data class Failed(val reason: String) : ProxySetupResult
+    }
 
     /** 是否支持代理覆盖（取决于设备 WebView 版本） */
     fun isSupported(): Boolean =
         WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)
 
     /**
-     * 设置当前进程的 WebView 代理。
-     * @return true 配置已应用；false 失败（不支持或参数无效或异常）
+     * 设置当前进程的 WebView 代理（suspend，等待配置真正应用）。
+     *
+     * 必须在主线程调用（ProxyController 要求），在 WebView 创建后、loadUrl 前调用。
+     * @return Applied=配置已应用；其他=失败，调用方应 fail-closed 阻止加载
      */
-    fun setProxy(type: ProxyType, host: String, port: Int): Boolean {
-        // 先清除旧代理，避免残留
-        clearProxy()
+    suspend fun setProxyAsync(
+        type: ProxyType,
+        host: String,
+        port: Int
+    ): ProxySetupResult = withContext(Dispatchers.Main) {
+        // 先清除旧代理，避免残留（见问题4：切换残留）
+        // 注意：清除也是异步的，这里等待它完成再继续
+        when (val clearResult = clearProxyAsync()) {
+            is ProxySetupResult.Failed -> return@withContext clearResult
+            is ProxySetupResult.NotSupported -> return@withContext clearResult
+            else -> Unit // Applied / 直连无需清除
+        }
 
-        if (type == ProxyType.NONE) return true
+        if (type == ProxyType.NONE) return@withContext ProxySetupResult.Applied
 
         if (!isSupported()) {
             Log.w(TAG, "WebView 不支持 PROXY_OVERRIDE，代理无法设置")
-            return false
+            return@withContext ProxySetupResult.NotSupported
         }
-        if (host.isBlank() || port <= 0 || port > 65535) {
-            Log.w(TAG, "代理地址/端口无效，跳过设置")
-            return false
+        if (host.isBlank()) {
+            return@withContext ProxySetupResult.InvalidArgs("代理地址为空")
+        }
+        if (port <= 0 || port > 65535) {
+            return@withContext ProxySetupResult.InvalidArgs("代理端口无效: $port")
+        }
+        // 主机格式校验（见问题9）：域名 / IPv4 / 规范 IPv6
+        if (!isValidHost(host)) {
+            return@withContext ProxySetupResult.InvalidArgs("代理地址格式无效: $host")
         }
 
-        return try {
+        return@withContext try {
             val scheme = when (type) {
                 ProxyType.HTTP -> "http"
                 ProxyType.SOCKS5 -> "socks"
-                ProxyType.NONE -> return true
+                ProxyType.NONE -> return@withContext ProxySetupResult.Applied
             }
             val config = ProxyConfig.Builder()
                 .addProxyRule("$scheme://$host:$port")
                 .build()
-            // setProxyOverride 必须传 executor（直接在当前线程跑回调）
-            val directExecutor = java.util.concurrent.Executor { it.run() }
-            ProxyController.getInstance().setProxyOverride(config, directExecutor, Runnable {
-                Log.i(TAG, "代理已应用: $scheme://$host:$port")
-            })
-            true
+            // 等待异步回调确认配置已应用（见问题2）
+            val ok = suspendCancellableCoroutine { cont ->
+                try {
+                    ProxyController.getInstance().setProxyOverride(
+                        config,
+                        directExecutor,
+                        Runnable {
+                            Log.i(TAG, "代理配置已应用: $scheme://$host:$port")
+                            if (cont.isActive) cont.resume(true)
+                        }
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "setProxyOverride 调用异常", e)
+                    if (cont.isActive) cont.resume(false)
+                }
+            }
+            if (ok) ProxySetupResult.Applied
+            else ProxySetupResult.Failed("代理配置回调未确认")
         } catch (e: Exception) {
             Log.w(TAG, "代理设置失败", e)
-            false
-        }
-    }
-
-    /** 明确清除代理覆盖，切回直连 */
-    fun clearProxy(): Boolean {
-        return try {
-            if (isSupported()) {
-                val directExecutor = java.util.concurrent.Executor { it.run() }
-                ProxyController.getInstance().clearProxyOverride(directExecutor, Runnable {
-                    Log.i(TAG, "代理已清除，切回直连")
-                })
-            }
-            true
-        } catch (e: Exception) {
-            Log.w(TAG, "清除代理失败", e)
-            false
+            ProxySetupResult.Failed(e.message ?: "未知错误")
         }
     }
 
     /**
-     * 后台测试代理是否真实生效。
-     * 直连请求一次 IP 查询接口，再经代理请求一次，对比出口 IP 是否变化。
-     * @return true 代理生效（IP 变化）；false 未生效
+     * 明确清除代理覆盖，切回直连（suspend，等待完成）。
+     * 直连 Profile 也要等清除完成再 loadUrl，确保旧代理不残留（见问题3）。
      */
-    suspend fun testProxyEffective(
+    suspend fun clearProxyAsync(): ProxySetupResult = withContext(Dispatchers.Main) {
+        if (!isSupported()) {
+            // 不支持代理覆盖的设备上没有旧代理可清，视为成功
+            return@withContext ProxySetupResult.Applied
+        }
+        return@withContext try {
+            val ok = suspendCancellableCoroutine { cont ->
+                try {
+                    ProxyController.getInstance().clearProxyOverride(
+                        directExecutor,
+                        Runnable {
+                            Log.i(TAG, "代理已清除，切回直连")
+                            if (cont.isActive) cont.resume(true)
+                        }
+                    )
+                } catch (e: Exception) {
+                    Log.w(TAG, "clearProxyOverride 调用异常", e)
+                    if (cont.isActive) cont.resume(false)
+                }
+            }
+            if (ok) ProxySetupResult.Applied
+            else ProxySetupResult.Failed("清除代理回调未确认")
+        } catch (e: Exception) {
+            Log.w(TAG, "清除代理失败", e)
+            ProxySetupResult.Failed(e.message ?: "未知错误")
+        }
+    }
+
+    // ============ 以下为诊断与连通性测试（手动触发，见问题1、问题7） ============
+
+    /** 主机格式校验：域名 / IPv4 / [...] 包裹的 IPv6（见问题9） */
+    fun isValidHost(host: String): Boolean {
+        val h = host.trim()
+        if (h.isEmpty() || h.length > 253) return false
+        if (h.contains(" ") || h.contains("/")) return false
+        // IPv6 必须用方括号包裹
+        if (h.startsWith("[")) {
+            return h.endsWith("]") && h.length > 2 &&
+                h.substring(1, h.length - 1).all { it.isDigit() || it == ':' || it in 'a'..'f' || it in 'A'..'F' }
+        }
+        if (h.contains(":")) return false // 裸 IPv6 不接受
+        // 域名或 IPv4：字母数字、点、横杠
+        return h.all { it.isLetterOrDigit() || it == '.' || it == '-' } &&
+            !h.startsWith(".") && !h.startsWith("-") && !h.endsWith(".")
+    }
+
+    /**
+     * 手动触发的代理连通性测试（见问题1、问题7）。
+     *
+     * 必须由用户主动触发，触发前 UI 明确提示：测试会先向 api.ipify.org
+     * 发起一次直连请求获取真实 IP，再经代理请求一次。结果命名为
+     * "Java 代理连通性测试"，不声称 WebView 已验证。
+     *
+     * 返回三档独立结果（见问题7）：
+     * A.configApplied - 配置是否成功应用（调用方传入）
+     * B.proxyReachable - 代理连接/认证是否成功
+     * C.webViewVerified - WebView 实际出口（本方法无法验证，恒为 null）
+     */
+    data class ProxyTestResult(
+        val configApplied: Boolean,
+        /** null=无法验证（如直连 IP 查不到），true=IP 变化，false=IP 未变 */
+        val proxyReachable: Boolean?,
+        /** WebView 实际出口：Java 层无法验证，恒为 null，UI 显示"无法验证" */
+        val webViewVerified: Boolean? = null,
+        val directIp: String? = null,
+        val proxyIp: String? = null,
+        val detail: String = ""
+    )
+
+    suspend fun testProxyConnectivity(
         host: String,
         port: Int,
-        type: ProxyType
-    ): Boolean = withContext(Dispatchers.IO) {
-        try {
-            val directIp = fetchIp(null) ?: run {
-                Log.w(TAG, "直连 IP 查询失败，无法对比")
-                return@withContext false
-            }
-            val proxyType = if (type == ProxyType.SOCKS5) Proxy.Type.SOCKS else Proxy.Type.HTTP
-            val proxy = Proxy(proxyType, InetSocketAddress(host, port))
-            val proxyIp = fetchIp(proxy) ?: run {
-                Log.w(TAG, "代理 IP 查询失败")
-                return@withContext false
-            }
-            val effective = directIp != proxyIp
-            Log.i(TAG, "代理生效测试: 直连=$directIp 代理=$proxyIp 生效=$effective")
-            effective
-        } catch (e: Exception) {
-            Log.w(TAG, "代理生效测试异常", e)
-            false
+        type: ProxyType,
+        configApplied: Boolean
+    ): ProxyTestResult = withContext(Dispatchers.IO) {
+        // 直连查一次（用户已确认，见问题1）
+        val directIp = fetchIp(null)
+        if (directIp == null) {
+            return@withContext ProxyTestResult(
+                configApplied = configApplied,
+                proxyReachable = null,
+                directIp = null,
+                detail = "直连 IP 查询失败，无法对比"
+            )
         }
+        val proxyType = if (type == ProxyType.SOCKS5) Proxy.Type.SOCKS else Proxy.Type.HTTP
+        val proxy = Proxy(proxyType, InetSocketAddress(host, port))
+        val proxyIp = fetchIp(proxy)
+        if (proxyIp == null) {
+            return@withContext ProxyTestResult(
+                configApplied = configApplied,
+                proxyReachable = false,
+                directIp = directIp,
+                detail = "经代理的 IP 查询失败（代理不可达或认证失败）"
+            )
+        }
+        val changed = directIp != proxyIp
+        ProxyTestResult(
+            configApplied = configApplied,
+            proxyReachable = changed,
+            directIp = directIp,
+            proxyIp = proxyIp,
+            detail = if (changed) "出口 IP 已变化" else "出口 IP 未变化（可能代理未生效）"
+        )
     }
 
     /** 轻量 IP 查询（api.ipify.org 返回纯文本 IP） */
@@ -136,6 +251,7 @@ object WebViewProxy {
 
     /**
      * 代理诊断：检查 ProxyController 可用性与代理服务器连通性。
+     * 不发起任何直连公网请求（见问题1）。
      */
     fun diagnose(host: String, port: Int): String {
         val sb = StringBuilder()
@@ -144,9 +260,10 @@ object WebViewProxy {
         sb.appendLine("设备: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
         sb.appendLine()
         sb.appendLine("① PROXY_OVERRIDE 支持: ${if (isSupported()) "是" else "否"}")
+        sb.appendLine("② 代理地址格式: ${if (isValidHost(host)) "有效" else "无效"}")
         sb.appendLine()
 
-        sb.appendLine("② 代理服务器连通性 ($host:$port):")
+        sb.appendLine("③ 代理服务器连通性 ($host:$port):")
         try {
             val socket = Socket()
             socket.connect(InetSocketAddress(host, port), 3000)

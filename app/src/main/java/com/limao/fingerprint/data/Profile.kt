@@ -45,9 +45,16 @@ data class Profile(
     val proxyHost: String = "",
     /** 代理端口 */
     val proxyPort: Int = 1080,
-    /** 代理用户名（可选，部分代理需要认证） */
+    /**
+     * 代理用户名（已废弃，见问题4）。
+     * 不再持久化到 JSON（ProfileRepository.mutate 会剥离），只走 ProxyCredentialStore。
+     * 保留字段仅为兼容旧数据反序列化，迁移后恒为空。
+     */
     val proxyUsername: String = "",
-    /** 代理密码（可选） */
+    /**
+     * 代理密码（已废弃，见问题4）。
+     * 不再持久化到 JSON，只走 ProxyCredentialStore。保留字段仅为兼容旧数据。
+     */
     val proxyPassword: String = "",
     /** 分组名，用于列表筛选，默认"未分组" */
     val group: String = "未分组",

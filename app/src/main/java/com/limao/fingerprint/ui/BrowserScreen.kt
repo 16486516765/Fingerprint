@@ -91,6 +91,27 @@ private fun normalizeUrl(input: String): String {
 }
 
 /**
+ * URL scheme 白名单（见问题16）。
+ * 只允许 http/https（+ about:blank），阻止 file/content/intent/javascript 等。
+ */
+private fun isAllowedScheme(url: String): Boolean {
+    val lower = url.lowercase()
+    return lower.startsWith("http://") ||
+        lower.startsWith("https://") ||
+        lower == "about:blank"
+}
+
+/** 代理设置 UI 状态（见问题2、问题3） */
+private sealed interface ProxySetupState {
+    /** 尚未设置（WebView 创建中） */
+    data object Pending : ProxySetupState
+    /** 配置已应用（ProxyController 回调已确认） */
+    data object Applied : ProxySetupState
+    /** 设置失败（fail-closed，不加载网页） */
+    data class Failed(val reason: String) : ProxySetupState
+}
+
+/**
  * 浏览器界面（运行在 :wvN 独立进程，由 BrowserActivity 承载）。
  *
  * @param profile 当前 profile（不可变快照；lastVisitedUrl 的持久化在内部处理）
@@ -105,6 +126,8 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
 
     // WebView 持有：factory 只跑一次，跨 recomposition 复用
     var webView by remember { mutableStateOf<WebView?>(null) }
+    // WebView 是否已创建（factory 跑完后触发代理设置流程）
+    var webViewCreated by remember { mutableStateOf(false) }
     // 地址栏文本
     var urlText by remember { mutableStateOf(profile.lastVisitedUrl.ifBlank { profile.homepageUrl }) }
     // 地址栏是否聚焦：聚焦时不让页面加载回调覆盖用户输入
@@ -114,22 +137,12 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
     // 导航按钮可用状态
     var canGoBack by remember { mutableStateOf(false) }
     var canGoForward by remember { mutableStateOf(false) }
-    // 代理设置结果：null=尚未尝试，true=配置已应用，false=配置失败降级直连
-    var proxyOk by remember { mutableStateOf<Boolean?>(null) }
-    // 代理生效检测：null=检测中/未检测，true=已生效，false=未生效
-    var proxyEffective by remember { mutableStateOf<Boolean?>(null) }
-
-    // 代理配置成功后，后台测一次真实生效性（对比直连/代理出口 IP）
-    LaunchedEffect(proxyOk) {
-        if (proxyOk == true && profile.proxyType != ProxyType.NONE) {
-            proxyEffective = null // 检测中
-            proxyEffective = WebViewProxy.testProxyEffective(
-                profile.proxyHost, profile.proxyPort, profile.proxyType
-            )
-        } else {
-            proxyEffective = null
-        }
-    }
+    // 代理设置状态：Pending=尚未设置，Applied=配置已应用，Failed=失败（fail-closed，不加载）
+    var proxyState by remember { mutableStateOf<ProxySetupState>(ProxySetupState.Pending) }
+    // fail-closed 对话框：代理失败时是否显示"仍然直连"选项
+    var showProxyFailDialog by remember { mutableStateOf(false) }
+    // 用户是否已选择"仍然直连"（绕过 fail-closed）
+    var bypassProxyFail by remember { mutableStateOf(false) }
     // 右下角菜单展开
     var menuOpen by remember { mutableStateOf(false) }
 
@@ -137,10 +150,46 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
         profile.lastVisitedUrl.ifBlank { profile.homepageUrl }.ifBlank { "about:blank" }
     }
 
-    /** 跳转 */
+    /**
+     * 代理设置流程（见问题2、问题3）：
+     * WebView 创建后，等待 ProxyController 配置真正应用，再 loadUrl。
+     * 代理失败时 fail-closed：不加载，弹窗让用户选择"仍然直连"或返回。
+     */
+    LaunchedEffect(webViewCreated) {
+        if (!webViewCreated) return@LaunchedEffect
+        val wv = webView ?: return@LaunchedEffect
+        val result = WebViewProxy.setProxyAsync(
+            profile.proxyType, profile.proxyHost, profile.proxyPort
+        )
+        when (result) {
+            is WebViewProxy.ProxySetupResult.Applied -> {
+                proxyState = ProxySetupState.Applied
+                wv.loadUrl(initialUrl)
+            }
+            is WebViewProxy.ProxySetupResult.NotSupported -> {
+                proxyState = ProxySetupState.Failed("WebView 内核不支持代理覆盖")
+                if (profile.proxyType != ProxyType.NONE) showProxyFailDialog = true
+                else wv.loadUrl(initialUrl) // 直连 profile：无旧代理可清，直接加载
+            }
+            is WebViewProxy.ProxySetupResult.InvalidArgs -> {
+                proxyState = ProxySetupState.Failed("代理参数无效：${result.reason}")
+                showProxyFailDialog = true
+            }
+            is WebViewProxy.ProxySetupResult.Failed -> {
+                proxyState = ProxySetupState.Failed("代理配置失败：${result.reason}")
+                showProxyFailDialog = true
+            }
+        }
+    }
+
+    /** 跳转（带 scheme 白名单，见问题16） */
     fun navigate(raw: String) {
         val url = normalizeUrl(raw)
         if (url.isBlank()) return
+        if (!isAllowedScheme(url)) {
+            Toast.makeText(context, "不支持的链接类型，已阻止", Toast.LENGTH_SHORT).show()
+            return
+        }
         urlText = url
         webView?.loadUrl(url)
     }
@@ -246,8 +295,7 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                     )
                     ProxyStatusBadge(
                         type = profile.proxyType,
-                        ok = proxyOk,
-                        effective = proxyEffective,
+                        state = proxyState,
                         host = profile.proxyHost,
                         port = profile.proxyPort
                     )
@@ -356,16 +404,17 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                         useWideViewPort = true
                         builtInZoomControls = true
                         displayZoomControls = false
+                        // 禁止 file/content 访问（见问题16）
+                        allowFileAccess = false
+                        allowContentAccess = false
                     }
                     // 自定义 UA（非空才覆盖）
                     if (profile.userAgent.isNotBlank()) {
                         settings.userAgentString = profile.userAgent
                     }
-                    // 代理设置：ProxyController 公开接口，进程级生效。
-                    // 必须在主线程、WebView 创建后、loadUrl 前调用。
-                    proxyOk = WebViewProxy.setProxy(
-                        profile.proxyType, profile.proxyHost, profile.proxyPort
-                    )
+                    // 注意：代理设置不在这里做。ProxyController 是异步的，
+                    // 由 LaunchedEffect(webViewCreated) 等待配置应用后再 loadUrl
+                    //（见问题2、问题3）。这里只创建 WebView。
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(
                             view: WebView?, url: String?, favicon: Bitmap?
@@ -392,8 +441,11 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                             view: WebView?, request: WebResourceRequest?
                         ): Boolean = false
 
-                        // 代理认证：只在认证 host 与配置的代理服务器一致时
-                        // 才自动提交凭据，防止钓鱼网站伪造认证框套取账号。
+                        // 代理认证：只在认证 host 与配置的代理 host 精确一致时
+                        // 才自动提交凭据（见问题5）。删除了宽松的 endsWith 子域名
+                        // 匹配，防止钓鱼网站伪造认证框套取代理账号。
+                        // 注意：HTTP 代理认证走这里；SOCKS5 的用户名密码是协议内
+                        // 协商，ProxyController 不支持，界面已明确标注（见问题6）。
                         override fun onReceivedHttpAuthRequest(
                             view: WebView?,
                             handler: HttpAuthHandler?,
@@ -402,19 +454,18 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                         ) {
                             val isProxyAuth = host != null &&
                                 profile.proxyHost.isNotBlank() &&
-                                (host == profile.proxyHost ||
-                                 host.endsWith(".${profile.proxyHost}"))
+                                profile.proxyType == ProxyType.HTTP &&
+                                host.equals(profile.proxyHost, ignoreCase = true)
                             if (isProxyAuth) {
-                                // 优先从加密存储读，老数据 fallback 明文字段
+                                // 只从加密存储读（明文字段已迁移清空，见问题4）
                                 val (u, p) = ProxyCredentialStore.load(ctx, profile.id)
-                                val username = u.ifBlank { profile.proxyUsername }
-                                val password = p.ifBlank { profile.proxyPassword }
-                                if (username.isNotBlank()) {
-                                    handler?.proceed(username, password)
+                                if (u.isNotBlank()) {
+                                    handler?.proceed(u, p)
                                 } else {
                                     handler?.cancel()
                                 }
                             } else {
+                                // 非代理认证一律不自动提交，防凭据泄露
                                 handler?.cancel()
                             }
                         }
@@ -431,8 +482,10 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                             progress = newProgress / 100f
                         }
                     }
-                    loadUrl(initialUrl)
+                    // 注意：不在这里 loadUrl。等 LaunchedEffect 确认代理配置
+                    // 应用后（或用户选择"仍然直连"）再加载（见问题2、问题3）。
                     webView = this
+                    webViewCreated = true
                 }
             },
             modifier = Modifier
@@ -442,27 +495,58 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
             onRelease = { it.destroy() }
         )
     }
+
+    // fail-closed 对话框（见问题3）：代理配置失败时默认阻止加载，
+    // 只有用户明确点"仍然直连"才放行。
+    if (showProxyFailDialog && !bypassProxyFail) {
+        val reason = (proxyState as? ProxySetupState.Failed)?.reason ?: "代理配置失败"
+        AlertDialog(
+            onDismissRequest = { /* 必须明确选择，不能点空白取消 */ },
+            title = { Text("代理配置失败") },
+            text = {
+                Text(
+                    "$reason\n\n为保护你的网络出口不被意外暴露，已阻止加载网页。" +
+                        "你可以返回检查代理配置，或选择仍然直连访问。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    bypassProxyFail = true
+                    showProxyFailDialog = false
+                    proxyState = ProxySetupState.Applied // 标记为用户放行
+                    webView?.loadUrl(initialUrl)
+                }) { Text("仍然直连") }
+            },
+            dismissButton = {
+                TextButton(onClick = { onNavigateBack() }) { Text("返回") }
+            }
+        )
+    }
 }
 
-/** 状态条右端的代理徽章（三态），点击出诊断报告 */
+/** 状态条右端的代理徽章，点击出诊断 + 手动连通性测试（见问题1、问题7） */
 @Composable
 private fun ProxyStatusBadge(
     type: ProxyType,
-    ok: Boolean?,
-    effective: Boolean?,
+    state: ProxySetupState,
     host: String,
     port: Int
 ) {
-    var showDiagnose by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
-    var diagnoseText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var showDialog by remember { mutableStateOf(false) }
+    var diagnoseText by remember { mutableStateOf("") }
+    // 手动测试相关
+    var showTestConfirm by remember { mutableStateOf(false) }
+    var testing by remember { mutableStateOf(false) }
+    var testResult by remember { mutableStateOf<WebViewProxy.ProxyTestResult?>(null) }
+
     val (label, color) = when {
         type == ProxyType.NONE -> "直连" to Color(0xFF9AA4B2)
-        ok == false -> "代理设置失败·已直连" to Color(0xFFF87171)
-        ok == true && effective == null -> "代理检测中…" to Color(0xFFFBBF24)
-        ok == true && effective == true ->
-            (if (type == ProxyType.SOCKS5) "SOCKS5 已生效" else "HTTP 已生效") to Color(0xFF4ADE80)
-        ok == true && effective == false -> "代理未生效" to Color(0xFFFB923C)
-        else -> "HTTP 已连接" to Color(0xFF4ADE80)
+        state is ProxySetupState.Failed -> "代理失败·已阻止加载" to Color(0xFFF87171)
+        state is ProxySetupState.Applied ->
+            (if (type == ProxyType.SOCKS5) "SOCKS5 已配置" else "HTTP 已配置") to Color(0xFF4ADE80)
+        else -> "代理配置中…" to Color(0xFFFBBF24)
     }
     Text(
         label,
@@ -473,23 +557,92 @@ private fun ProxyStatusBadge(
             .background(color.copy(alpha = 0.25f))
             .clickable {
                 diagnoseText = WebViewProxy.diagnose(host, port)
-                showDiagnose = true
+                testResult = null
+                showDialog = true
             }
             .padding(horizontal = 8.dp, vertical = 3.dp)
     )
-    if (showDiagnose) {
+    if (showDialog) {
         AlertDialog(
-            onDismissRequest = { showDiagnose = false },
+            onDismissRequest = { showDialog = false },
             title = { Text("代理诊断") },
             text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(diagnoseText, fontSize = 12.sp)
+                    if (type != ProxyType.NONE) {
+                        Spacer(Modifier.height(12.dp))
+                        Text(
+                            "连通性测试为手动触发，不会自动运行。",
+                            fontSize = 12.sp,
+                            color = Color(0xFF9AA4B2)
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        androidx.compose.material3.Button(
+                            onClick = { showTestConfirm = true },
+                            enabled = !testing
+                        ) {
+                            Text(if (testing) "测试中…" else "测试代理连通性")
+                        }
+                        testResult?.let { r ->
+                            Spacer(Modifier.height(8.dp))
+                            Text("—— Java 代理连通性测试 ——", fontSize = 12.sp)
+                            Text(
+                                "A. 配置已应用：${if (r.configApplied) "是" else "否"}",
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                "B. 代理连接：" + when (r.proxyReachable) {
+                                    true -> "成功（出口 IP 已变化）"
+                                    false -> "失败（${r.detail}）"
+                                    null -> "无法验证（${r.detail}）"
+                                },
+                                fontSize = 12.sp
+                            )
+                            Text(
+                                "C. WebView 实际出口：无法验证（Java 层测不到 WebView 流量）",
+                                fontSize = 12.sp,
+                                color = Color(0xFF9AA4B2)
+                            )
+                            if (r.directIp != null) {
+                                Text("直连 IP: ${r.directIp}", fontSize = 11.sp)
+                            }
+                            if (r.proxyIp != null) {
+                                Text("代理 IP: ${r.proxyIp}", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showDialog = false }) { Text("关闭") }
+            }
+        )
+    }
+    // 测试前二次确认（见问题1）：明确告知会发起直连请求
+    if (showTestConfirm) {
+        AlertDialog(
+            onDismissRequest = { showTestConfirm = false },
+            title = { Text("确认测试") },
+            text = {
                 Text(
-                    diagnoseText,
-                    fontSize = 12.sp,
-                    modifier = Modifier.verticalScroll(rememberScrollState())
+                    "测试会先向 api.ipify.org 发起一次直连请求获取真实出口 IP，" +
+                        "再经代理请求一次做对比。直连请求会暴露你的真实 IP 给该服务。" +
+                        "继续吗？"
                 )
             },
             confirmButton = {
-                TextButton(onClick = { showDiagnose = false }) { Text("关闭") }
+                TextButton(onClick = {
+                    showTestConfirm = false
+                    testing = true
+                    scope.launch {
+                        val applied = state is ProxySetupState.Applied
+                        testResult = WebViewProxy.testProxyConnectivity(host, port, type, applied)
+                        testing = false
+                    }
+                }) { Text("继续测试") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showTestConfirm = false }) { Text("取消") }
             }
         )
     }

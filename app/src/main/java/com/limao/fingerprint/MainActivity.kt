@@ -19,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.lifecycle.lifecycleScope
 import com.limao.fingerprint.data.NoFreeSlotException
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProfileRepository
@@ -68,6 +69,20 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // P0-4：一次性迁移 JSON 里残留的明文代理凭据到加密存储
+        lifecycleScope.launch {
+            try {
+                ProfileRepository.getInstance(this@MainActivity)
+                    .migrateCredentialsIfNeeded()
+            } catch (e: Exception) {
+                android.util.Log.e("MainActivity", "凭据迁移失败", e)
+                Toast.makeText(
+                    this@MainActivity,
+                    "代理凭据迁移失败：${e.message}，请检查后重试",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
         setContent {
             FingerprintTheme {
                 MainNav()
@@ -105,16 +120,16 @@ class MainActivity : ComponentActivity() {
                 val editing = profiles.find { it.id == s.profileId }
                 ProfileSettingsScreen(
                     profile = editing,
-                    onSave = { draft ->
+                    onSave = { draft, username, password ->
                         scope.launch {
                             try {
                                 if (editing == null) {
                                     // 新建：自动分配 slot
                                     val created = repository.addProfile(draft)
-                                    // 代理凭据存加密存储（与明文字段分离）
+                                    // 代理凭据只存加密存储（P0-4）
                                     ProxyCredentialStore.save(
                                         this@MainActivity, created.id,
-                                        draft.proxyUsername, draft.proxyPassword
+                                        username, password
                                     )
                                     Toast.makeText(
                                         this@MainActivity, "Profile 已创建", Toast.LENGTH_SHORT
@@ -124,7 +139,7 @@ class MainActivity : ComponentActivity() {
                                     repository.updateProfile(draft.copy(slot = editing.slot))
                                     ProxyCredentialStore.save(
                                         this@MainActivity, editing.id,
-                                        draft.proxyUsername, draft.proxyPassword
+                                        username, password
                                     )
                                 }
                                 screen = Screen.List

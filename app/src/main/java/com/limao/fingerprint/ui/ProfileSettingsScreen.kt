@@ -68,8 +68,9 @@ private val DangerColor = Color(0xFFF87171)
  * Profile 设置页（新建 / 编辑）。
  *
  * @param profile null=新建；非空=编辑（表单回填）
- * @param onSave 点保存：把组装好的 Profile 交给调用方（调用方负责调 repository
- *               addProfile 自动分配 slot，或 updateProfile）
+ * @param onSave 点保存：把组装好的 Profile + 代理凭据（明文，仅内存传递）
+ *               交给调用方（调用方负责调 repository addProfile 自动分配 slot，
+ *               或 updateProfile；凭据由调用方存 ProxyCredentialStore）
  * @param onDelete 删除回调（新建模式传 null，不显示删除按钮）
  * @param onNavigateBack 返回
  */
@@ -77,7 +78,7 @@ private val DangerColor = Color(0xFFF87171)
 @Composable
 fun ProfileSettingsScreen(
     profile: Profile?,
-    onSave: (Profile) -> Unit,
+    onSave: (Profile, String, String) -> Unit,
     onDelete: (() -> Unit)?,
     onNavigateBack: () -> Unit
 ) {
@@ -105,8 +106,8 @@ fun ProfileSettingsScreen(
     var proxyType by remember { mutableStateOf(profile?.proxyType ?: ProxyType.NONE) }
     var proxyHost by remember { mutableStateOf(profile?.proxyHost ?: "") }
     var proxyPort by remember { mutableStateOf(profile?.proxyPort?.toString() ?: "1080") }
-    var proxyUser by remember { mutableStateOf(savedCreds.first.ifBlank { profile?.proxyUsername ?: "" }) }
-    var proxyPass by remember { mutableStateOf(savedCreds.second.ifBlank { profile?.proxyPassword ?: "" }) }
+    var proxyUser by remember { mutableStateOf(savedCreds.first) }
+    var proxyPass by remember { mutableStateOf(savedCreds.second) }
     // 校验与对话框
     var nameError by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
@@ -122,6 +123,7 @@ fun ProfileSettingsScreen(
             UaPresets.presets.find { it.displayName == uaLabel }?.ua ?: ""
         }
         val base = profile ?: Profile()
+        // P0-4：凭据单独传递，不进 Profile JSON
         onSave(
             base.copy(
                 name = name.trim(),
@@ -131,9 +133,11 @@ fun ProfileSettingsScreen(
                 proxyType = proxyType,
                 proxyHost = proxyHost.trim(),
                 proxyPort = proxyPort.toIntOrNull()?.coerceIn(1, 65535) ?: 1080,
-                proxyUsername = proxyUser.trim(),
-                proxyPassword = proxyPass
-            )
+                proxyUsername = "",
+                proxyPassword = ""
+            ),
+            proxyUser.trim(),
+            proxyPass
         )
     }
 

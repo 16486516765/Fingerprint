@@ -18,6 +18,10 @@ private const val DATASTORE_NAME = "fingerprint_profiles"
 /** 存 Profile 列表 JSON 的 key */
 private val KEY_PROFILE_LIST = stringPreferencesKey("profile_list_json")
 
+/** 凭据迁移完成标记的 key（见问题4） */
+private val KEY_CREDENTIALS_MIGRATED =
+    androidx.datastore.preferences.core.booleanPreferencesKey("credentials_migrated")
+
 /** 网站图标开关的 key（默认开；关闭后不请求 Google favicon 服务，保护隐私） */
 private val KEY_FAVICON_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("favicon_enabled")
 
@@ -125,8 +129,47 @@ class ProfileRepository private constructor(private val appContext: Context) {
     private suspend fun mutate(transform: (List<Profile>) -> List<Profile>) {
         appContext.profileDataStore.edit { prefs ->
             val current = readList(prefs[KEY_PROFILE_LIST])
-            prefs[KEY_PROFILE_LIST] = gson.toJson(transform(current))
+            val transformed = transform(current)
+            // P0-4：永不将明文代理凭据写入 JSON。凭据只存 ProxyCredentialStore。
+            val sanitized = transformed.map {
+                if (it.proxyUsername.isNotBlank() || it.proxyPassword.isNotBlank()) {
+                    it.copy(proxyUsername = "", proxyPassword = "")
+                } else it
+            }
+            prefs[KEY_PROFILE_LIST] = gson.toJson(sanitized)
         }
+    }
+
+    /**
+     * 一次性迁移（见问题4）：把 JSON 里残留的明文代理凭据搬到加密存储，
+     * 成功后清除 JSON 中的明文字段。迁移失败抛异常，不静默回退。
+     *
+     * 只应在主进程调用一次（MainActivity.onCreate）。
+     */
+    suspend fun migrateCredentialsIfNeeded() {
+        val prefs = appContext.profileDataStore.data.first()
+        if (prefs[KEY_CREDENTIALS_MIGRATED] == true) return
+
+        val profiles = readList(prefs[KEY_PROFILE_LIST])
+        var migratedCount = 0
+        for (p in profiles) {
+            if (p.proxyUsername.isNotBlank() || p.proxyPassword.isNotBlank()) {
+                // 先写加密存储，成功后再清 JSON（顺序不能反）
+                ProxyCredentialStore.save(appContext, p.id, p.proxyUsername, p.proxyPassword)
+                // 验证写入成功
+                val (u, _) = ProxyCredentialStore.load(appContext, p.id)
+                if (u != p.proxyUsername) {
+                    throw IllegalStateException("凭据迁移失败：profile ${p.id} 写入验证不通过")
+                }
+                migratedCount++
+            }
+        }
+        // mutate() 会自动剥离明文字段（见上）
+        mutate { list -> list }
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_CREDENTIALS_MIGRATED] = true
+        }
+        android.util.Log.i("ProfileRepository", "凭据迁移完成，共 $migratedCount 个 profile")
     }
 
     companion object {
