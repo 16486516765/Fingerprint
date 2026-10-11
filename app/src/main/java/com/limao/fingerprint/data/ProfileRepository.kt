@@ -33,6 +33,10 @@ private val KEY_DIRTY_SLOTS =
 private val KEY_PROFILE_LIST_BACKUP =
     stringPreferencesKey("profile_list_json_backup")
 
+/** 滚动备份的 key：每次成功写入前保存上一份（见 BUG-4） */
+private val KEY_PROFILE_LIST_PREV =
+    stringPreferencesKey("profile_list_json_prev")
+
 /** JSON 损坏标记的 key */
 private val KEY_PROFILE_LIST_CORRUPTED =
     androidx.datastore.preferences.core.booleanPreferencesKey("profile_list_corrupted")
@@ -200,6 +204,47 @@ class ProfileRepository private constructor(private val appContext: Context) {
         }
     }
 
+    /**
+     * BUG-4：读取损坏备份的原始 JSON（用于"导出备份"）。
+     * @return 备份 JSON，无备份返回 null
+     */
+    suspend fun getBackupJson(): String? {
+        val prefs = appContext.profileDataStore.data.first()
+        return prefs[KEY_PROFILE_LIST_BACKUP]
+    }
+
+    /**
+     * BUG-4：从备份恢复。把备份 JSON 写回主 key 并清除损坏标记。
+     * @return true 恢复成功；false 无备份可恢复
+     */
+    suspend fun restoreFromBackup(): Boolean {
+        val prefs = appContext.profileDataStore.data.first()
+        val backup = prefs[KEY_PROFILE_LIST_BACKUP]
+        if (backup.isNullOrBlank()) return false
+        // 先验证备份本身能解析，避免把坏备份写回去
+        try {
+            gson.fromJson<List<Profile>>(backup, listType)
+        } catch (e: Exception) {
+            android.util.Log.e("ProfileRepository", "备份 JSON 也损坏，无法恢复", e)
+            return false
+        }
+        appContext.profileDataStore.edit { p ->
+            p[KEY_PROFILE_LIST] = backup
+            p[KEY_PROFILE_LIST_CORRUPTED] = false
+        }
+        return true
+    }
+
+    /**
+     * BUG-4：清空重建。丢弃损坏数据（备份保留），清除标记回到空列表。
+     */
+    suspend fun clearAndRebuild() {
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_PROFILE_LIST] = "[]"
+            prefs[KEY_PROFILE_LIST_CORRUPTED] = false
+        }
+    }
+
     /** 原子读写：读出 -> 变换 -> 写回（损坏时拒绝覆盖，见问题12） */
     private suspend fun mutate(transform: (List<Profile>) -> List<Profile>) {
         appContext.profileDataStore.edit { prefs ->
@@ -217,6 +262,11 @@ class ProfileRepository private constructor(private val appContext: Context) {
                 if (it.proxyUsername.isNotBlank() || it.proxyPassword.isNotBlank()) {
                     it.copy(proxyUsername = "", proxyPassword = "")
                 } else it
+            }
+            // BUG-4：写入前滚动备份上一份，损坏时可回滚
+            val oldJson = prefs[KEY_PROFILE_LIST]
+            if (!oldJson.isNullOrBlank()) {
+                prefs[KEY_PROFILE_LIST_PREV] = oldJson
             }
             prefs[KEY_PROFILE_LIST] = gson.toJson(sanitized)
         }

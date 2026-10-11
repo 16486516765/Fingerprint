@@ -19,6 +19,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.limao.fingerprint.data.NoFreeSlotException
 import com.limao.fingerprint.data.Profile
@@ -67,27 +68,130 @@ private sealed interface Screen {
  */
 class MainActivity : ComponentActivity() {
 
+    /** BUG-4：JSON 损坏时显示恢复选项 */
+    private var showCorruptDialog by mutableStateOf(false)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // P0-4：一次性迁移 JSON 里残留的明文代理凭据到加密存储
+        // BUG-4：最先检查 JSON 是否损坏（之前 checkAndBackupCorrupted 从未被调用）
         lifecycleScope.launch {
             try {
-                ProfileRepository.getInstance(this@MainActivity)
-                    .migrateCredentialsIfNeeded()
+                val corrupted = ProfileRepository.getInstance(this@MainActivity)
+                    .checkAndBackupCorrupted()
+                if (corrupted) {
+                    showCorruptDialog = true
+                } else {
+                    // P0-4：一次性迁移 JSON 里残留的明文代理凭据到加密存储
+                    ProfileRepository.getInstance(this@MainActivity)
+                        .migrateCredentialsIfNeeded()
+                }
             } catch (e: Exception) {
-                android.util.Log.e("MainActivity", "凭据迁移失败", e)
-                Toast.makeText(
-                    this@MainActivity,
-                    "代理凭据迁移失败：${e.message}，请检查后重试",
-                    Toast.LENGTH_LONG
-                ).show()
+                android.util.Log.e("MainActivity", "启动检查失败", e)
             }
         }
         setContent {
             FingerprintTheme {
                 MainNav()
+                if (showCorruptDialog) {
+                    CorruptDataDialog(
+                        onExport = { exportBackup() },
+                        onRestore = { restoreBackup() },
+                        onRebuild = { rebuildEmpty() }
+                    )
+                }
             }
         }
+    }
+
+    /** BUG-4：导出备份 JSON 到下载目录 */
+    private fun exportBackup() {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val json = ProfileRepository.getInstance(this@MainActivity).getBackupJson()
+                if (json.isNullOrBlank()) {
+                    showToast("没有可导出的备份")
+                    return@launch
+                }
+                val file = java.io.File(
+                    android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS
+                    ),
+                    "Fingerprint-profile-backup.json"
+                )
+                file.writeText(json)
+                showToast("已导出到下载目录")
+            } catch (e: Exception) {
+                showToast("导出失败：${e.message}")
+            }
+        }
+    }
+
+    /** BUG-4：从备份恢复 */
+    private fun restoreBackup() {
+        lifecycleScope.launch {
+            try {
+                val ok = ProfileRepository.getInstance(this@MainActivity).restoreFromBackup()
+                showToast(if (ok) "已从备份恢复" else "备份不可用或已损坏")
+                if (ok) showCorruptDialog = false
+            } catch (e: Exception) {
+                showToast("恢复失败：${e.message}")
+            }
+        }
+    }
+
+    /** BUG-4：清空重建 */
+    private fun rebuildEmpty() {
+        lifecycleScope.launch {
+            try {
+                ProfileRepository.getInstance(this@MainActivity).clearAndRebuild()
+                showToast("已清空并重建")
+                showCorruptDialog = false
+            } catch (e: Exception) {
+                showToast("重建失败：${e.message}")
+            }
+        }
+    }
+
+    private fun showToast(msg: String) {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    @Composable
+    private fun CorruptDataDialog(
+        onExport: () -> Unit,
+        onRestore: () -> Unit,
+        onRebuild: () -> Unit
+    ) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { /* 必须三选一，不可点空白关闭 */ },
+            title = { androidx.compose.material3.Text("配置数据损坏") },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.material3.Text(
+                        "Profile 配置文件已损坏，原数据已自动备份，请选择处理方式："
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        modifier = androidx.compose.ui.Modifier
+                            .height(12.dp)
+                    )
+                    androidx.compose.material3.TextButton(onClick = onRestore) {
+                        androidx.compose.material3.Text("从备份恢复（推荐）")
+                    }
+                    androidx.compose.material3.TextButton(onClick = onExport) {
+                        androidx.compose.material3.Text("导出备份 JSON")
+                    }
+                    androidx.compose.material3.TextButton(onClick = onRebuild) {
+                        androidx.compose.material3.Text(
+                            "清空重建",
+                            color = androidx.compose.ui.graphics.Color(0xFFF87171)
+                        )
+                    }
+                }
+            },
+            confirmButton = {}
+        )
     }
 
     override fun onResume() {
