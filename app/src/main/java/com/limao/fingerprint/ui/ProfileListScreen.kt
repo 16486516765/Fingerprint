@@ -97,10 +97,16 @@ fun ProfileListScreen(
     runningProfileIds: Set<String>,
     faviconEnabled: Boolean,
     onFaviconToggle: (Boolean) -> Unit,
+    appLockEnabled: Boolean,
+    onAppLockToggle: (Boolean) -> Unit,
+    secureFlagEnabled: Boolean,
+    onSecureFlagToggle: (Boolean) -> Unit,
     onLaunch: (String) -> Unit,
     onKill: (String) -> Unit,
     onEdit: (String) -> Unit,
-    onAdd: () -> Unit
+    onAdd: () -> Unit,
+    onExportAll: () -> Unit,
+    onImport: () -> Unit
 ) {
     val context = LocalContext.current
     // 右上角菜单与崩溃日志对话框
@@ -163,6 +169,59 @@ fun ProfileListScreen(
                                     crashLogText = CrashHandler.readLog(context)
                                     crashLogOpen = true
                                 }
+                            )
+                            // §4.9 Profile 导出/导入
+                            DropdownMenuItem(
+                                text = { Text("导出全部 Profile（加密）") },
+                                onClick = {
+                                    menuOpen = false
+                                    onExportAll()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("导入 Profile（加密）") },
+                                onClick = {
+                                    menuOpen = false
+                                    onImport()
+                                }
+                            )
+                            // §4.10 应用锁开关
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            "应用锁（指纹/密码）",
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Switch(
+                                            checked = appLockEnabled,
+                                            onCheckedChange = { onAppLockToggle(it) }
+                                        )
+                                    }
+                                },
+                                onClick = { onAppLockToggle(!appLockEnabled) }
+                            )
+                            // §4.10 防截屏开关
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            "防截屏（最近任务隐藏内容）",
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Switch(
+                                            checked = secureFlagEnabled,
+                                            onCheckedChange = { onSecureFlagToggle(it) }
+                                        )
+                                    }
+                                },
+                                onClick = { onSecureFlagToggle(!secureFlagEnabled) }
                             )
                             DropdownMenuItem(
                                 text = { Text("提交 Bug 反馈") },

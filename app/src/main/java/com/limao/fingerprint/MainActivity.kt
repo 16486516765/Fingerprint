@@ -1,5 +1,8 @@
 package com.limao.fingerprint
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
@@ -8,6 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.MaterialTheme
@@ -21,6 +27,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.lifecycleScope
 import com.limao.fingerprint.data.NoFreeSlotException
 import com.limao.fingerprint.data.Profile
@@ -73,9 +80,29 @@ class MainActivity : ComponentActivity() {
     private var showCorruptDialog by mutableStateOf(false)
     /** §4.10 运行状态：:wvN 进程存活的 profile id 集合 */
     private var runningProfileIds by mutableStateOf<Set<String>>(emptySet())
+    /** §4.10 应用锁：本会话是否已通过验证 */
+    private var appUnlocked by mutableStateOf(true)
+    /** §4.10 应用锁：上次切后台时间（超过 2 分钟回前台要重新验证） */
+    private var lastBackgroundTime: Long = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // §4.10 防截屏：根据设置应用 FLAG_SECURE
+        lifecycleScope.launch {
+            try {
+                val secure = kotlinx.coroutines.flow.first(
+                    ProfileRepository.getInstance(this@MainActivity).secureFlagEnabled
+                )
+                if (secure) {
+                    window.setFlags(
+                        android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                        android.view.WindowManager.LayoutParams.FLAG_SECURE
+                    )
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "FLAG_SECURE 设置失败", e)
+            }
+        }
         // BUG-4：最先检查 JSON 是否损坏（之前 checkAndBackupCorrupted 从未被调用）
         lifecycleScope.launch {
             try {
@@ -87,6 +114,9 @@ class MainActivity : ComponentActivity() {
                     // P0-4：一次性迁移 JSON 里残留的明文代理凭据到加密存储
                     ProfileRepository.getInstance(this@MainActivity)
                         .migrateCredentialsIfNeeded()
+                    // §4.3：旧数据补指纹种子 + 设备模板
+                    ProfileRepository.getInstance(this@MainActivity)
+                        .migrateFpConfigIfNeeded()
                 }
             } catch (e: Exception) {
                 android.util.Log.e("MainActivity", "启动检查失败", e)
@@ -94,13 +124,62 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             FingerprintTheme {
-                MainNav()
+                // §4.10 应用锁：未验证时只显示锁定页
+                if (!appUnlocked) {
+                    AppLockScreen(onRetry = { showBiometricPrompt() })
+                } else {
+                    MainNav()
+                }
                 if (showCorruptDialog) {
                     CorruptDataDialog(
                         onExport = { exportBackup() },
                         onRestore = { restoreBackup() },
                         onRebuild = { rebuildEmpty() }
                     )
+                }
+            }
+        }
+    }
+
+    /** §4.10 应用锁锁定页 */
+    @Composable
+    private fun AppLockScreen(onRetry: () -> Unit) {
+        androidx.compose.foundation.layout.Box(
+            modifier = androidx.compose.ui.Modifier
+                .fillMaxSize()
+                .background(androidx.compose.ui.graphics.Color(0xFF000000)),
+            contentAlignment = androidx.compose.ui.Alignment.Center
+        ) {
+            androidx.compose.foundation.layout.Column(
+                horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
+            ) {
+                androidx.compose.material3.Icon(
+                    androidx.compose.material.icons.Icons.Filled.Fingerprint,
+                    contentDescription = null,
+                    tint = androidx.compose.ui.graphics.Color(0xFF5A6675),
+                    modifier = androidx.compose.ui.Modifier.size(72.dp)
+                )
+                androidx.compose.foundation.layout.Spacer(
+                    modifier = androidx.compose.ui.Modifier.height(16.dp)
+                )
+                androidx.compose.material3.Text(
+                    "Fingerprint 已锁定",
+                    color = androidx.compose.ui.graphics.Color.White,
+                    fontSize = 18.sp
+                )
+                androidx.compose.foundation.layout.Spacer(
+                    modifier = androidx.compose.ui.Modifier.height(8.dp)
+                )
+                androidx.compose.material3.Text(
+                    "验证身份以继续",
+                    color = androidx.compose.ui.graphics.Color(0xFF9AA4B2),
+                    fontSize = 14.sp
+                )
+                androidx.compose.foundation.layout.Spacer(
+                    modifier = androidx.compose.ui.Modifier.height(24.dp)
+                )
+                androidx.compose.material3.Button(onClick = onRetry) {
+                    androidx.compose.material3.Text("验证身份")
                 }
             }
         }
@@ -161,6 +240,200 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /** §4.9 导出对话框：输入密码，生成加密字符串，复制到剪贴板 */
+    @Composable
+    private fun ExportDialog(
+        profiles: List<Profile>,
+        onDismiss: () -> Unit,
+        onExported: () -> Unit
+    ) {
+        var password by remember { mutableStateOf("") }
+        var result by remember { mutableStateOf<String?>(null) }
+        val context = androidx.compose.ui.platform.LocalContext.current
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { androidx.compose.material3.Text("导出全部 Profile") },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.material3.Text(
+                        "用密码加密导出（PBKDF2 + AES-GCM）。\n" +
+                            "代理账号密码、浏览记录不会导出，导入后需重新填写。",
+                        fontSize = 13.sp,
+                        color = Color(0xFF9AA4B2)
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+                    if (result == null) {
+                        androidx.compose.material3.OutlinedTextField(
+                            value = password,
+                            onValueChange = { password = it },
+                            label = { androidx.compose.material3.Text("设置导出密码") },
+                            visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    } else {
+                        androidx.compose.material3.Text(
+                            "导出成功，已复制到剪贴板，请妥善保存：",
+                            fontSize = 13.sp,
+                            color = Color(0xFF4ADE80)
+                        )
+                        androidx.compose.foundation.layout.Spacer(
+                            modifier = Modifier.height(8.dp)
+                        )
+                        androidx.compose.material3.Text(
+                            result!!.take(60) + "...",
+                            fontSize = 11.sp,
+                            fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,
+                            color = Color(0xFF9AA4B2)
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                if (result == null) {
+                    androidx.compose.material3.TextButton(
+                        onClick = {
+                            if (password.length < 4) {
+                                Toast.makeText(context, "密码至少 4 位", Toast.LENGTH_SHORT).show()
+                                return@TextButton
+                            }
+                            try {
+                                val encrypted =
+                                    com.limao.fingerprint.data.ProfileExportImport.exportAll(
+                                        profiles, password
+                                    )
+                                result = encrypted
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                        as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("profile_export", encrypted))
+                            } catch (e: Exception) {
+                                Toast.makeText(
+                                    context, "导出失败：${e.message}", Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    ) { androidx.compose.material3.Text("导出并复制") }
+                } else {
+                    androidx.compose.material3.TextButton(onClick = onExported) {
+                        androidx.compose.material3.Text("完成")
+                    }
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = onDismiss) {
+                    androidx.compose.material3.Text("取消")
+                }
+            }
+        )
+    }
+
+    /** §4.9 导入对话框：粘贴加密字符串 + 密码，解密后逐个导入 */
+    @Composable
+    private fun ImportDialog(
+        onDismiss: () -> Unit,
+        onImported: () -> Unit
+    ) {
+        var encrypted by remember { mutableStateOf("") }
+        var password by remember { mutableStateOf("") }
+        val context = androidx.compose.ui.platform.LocalContext.current
+        val scope = rememberCoroutineScope()
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = onDismiss,
+            title = { androidx.compose.material3.Text("导入 Profile") },
+            text = {
+                androidx.compose.foundation.layout.Column {
+                    androidx.compose.material3.Text(
+                        "粘贴导出的加密字符串，输入密码解密导入。\n" +
+                            "导入的 Profile 会分配新的 slot 和指纹种子。",
+                        fontSize = 13.sp,
+                        color = Color(0xFF9AA4B2)
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        modifier = Modifier.height(12.dp)
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = encrypted,
+                        onValueChange = { encrypted = it },
+                        label = { androidx.compose.material3.Text("加密字符串") },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 4
+                    )
+                    androidx.compose.foundation.layout.Spacer(
+                        modifier = Modifier.height(8.dp)
+                    )
+                    androidx.compose.material3.OutlinedTextField(
+                        value = password,
+                        onValueChange = { password = it },
+                        label = { androidx.compose.material3.Text("密码") },
+                        visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(
+                    onClick = {
+                        if (encrypted.isBlank() || password.isBlank()) {
+                            Toast.makeText(context, "请填写完整", Toast.LENGTH_SHORT).show()
+                            return@TextButton
+                        }
+                        scope.launch {
+                            try {
+                                val imported =
+                                    com.limao.fingerprint.data.ProfileExportImport.importProfiles(
+                                        encrypted, password
+                                    )
+                                if (imported.isEmpty()) {
+                                    Toast.makeText(context, "没有可导入的 Profile", Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                val repository =
+                                    ProfileRepository.getInstance(this@MainActivity)
+                                var count = 0
+                                for (p in imported) {
+                                    try {
+                                        // 分配新 ID/slot/指纹种子，避免冲突
+                                        val newProfile = p.copy(
+                                            id = java.util.UUID.randomUUID().toString(),
+                                            slot = -1,
+                                            fpSeed = java.util.UUID.randomUUID().leastSignificantBits,
+                                            createdAt = System.currentTimeMillis()
+                                        )
+                                        repository.addProfile(newProfile)
+                                        count++
+                                    } catch (e: NoFreeSlotException) {
+                                        Toast.makeText(
+                                            context,
+                                            "已导入 $count 个，slot 已满",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                        break
+                                    }
+                                }
+                                Toast.makeText(
+                                    context, "成功导入 $count 个 Profile", Toast.LENGTH_SHORT
+                                ).show()
+                                onImported()
+                            } catch (e: IllegalArgumentException) {
+                                Toast.makeText(
+                                    context, "导入失败：${e.message}", Toast.LENGTH_LONG
+                                ).show()
+                            }
+                        }
+                    }
+                ) { androidx.compose.material3.Text("导入") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = onDismiss) {
+                    androidx.compose.material3.Text("取消")
+                }
+            }
+        )
+    }
+
     @Composable
     private fun CorruptDataDialog(
         onExport: () -> Unit,
@@ -199,6 +472,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        // §4.10 应用锁：检查是否需要验证
+        checkAppLock()
         // §4.10 运行状态：刷新哪些 :wvN 进程还活着
         refreshRunningProfiles()
         // 回收 :wvN 进程写下的 pending URL 文件，统一由主进程写 DataStore（见问题10）
@@ -227,6 +502,82 @@ class MainActivity : ComponentActivity() {
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "回收 pending URL 失败", e)
             }
+        }
+    }
+
+    override fun onPause() {
+        super.onPause()
+        // §4.10 应用锁：记录切后台时间
+        lastBackgroundTime = System.currentTimeMillis()
+    }
+
+    /**
+     * §4.10 应用锁：已开启且（未验证过 / 后台超过 2 分钟）时要求验证。
+     * 用 BiometricPrompt（指纹/面容），降级可用设备 PIN/密码。
+     */
+    private fun checkAppLock() {
+        lifecycleScope.launch {
+            try {
+                val repository = ProfileRepository.getInstance(this@MainActivity)
+                val enabled = repository.appLockEnabled
+                    .let { flow ->
+                        kotlinx.coroutines.flow.first(flow)
+                    }
+                if (!enabled) {
+                    appUnlocked = true
+                    return@launch
+                }
+                val needAuth = !appUnlocked ||
+                    (lastBackgroundTime > 0 &&
+                        System.currentTimeMillis() - lastBackgroundTime > 2 * 60 * 1000)
+                if (needAuth) {
+                    appUnlocked = false
+                    showBiometricPrompt()
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("MainActivity", "应用锁检查失败", e)
+                appUnlocked = true // 检查失败时放行，避免锁死
+            }
+        }
+    }
+
+    /** §4.10：弹出系统生物识别/设备凭据验证 */
+    private fun showBiometricPrompt() {
+        try {
+            val executor = androidx.core.content.ContextCompat.getMainExecutor(this)
+            val prompt = androidx.biometric.BiometricPrompt(
+                this,
+                executor,
+                object : androidx.biometric.BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(
+                        result: androidx.biometric.BiometricPrompt.AuthenticationResult
+                    ) {
+                        appUnlocked = true
+                        lastBackgroundTime = 0
+                    }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        // 用户取消或多次失败：留在锁定页，不放行
+                        android.util.Log.w("MainActivity", "验证失败: $errString")
+                    }
+
+                    override fun onAuthenticationFailed() {
+                        // 单次识别失败，可重试，不处理
+                    }
+                }
+            )
+            val info = androidx.biometric.BiometricPrompt.PromptInfo.Builder()
+                .setTitle("Fingerprint 已锁定")
+                .setSubtitle("验证身份以查看你的 Profile")
+                .setAllowedAuthenticators(
+                    androidx.biometric.BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                        androidx.biometric.BiometricManager.Authenticators.DEVICE_CREDENTIAL
+                )
+                .build()
+            prompt.authenticate(info)
+        } catch (e: Exception) {
+            android.util.Log.w("MainActivity", "生物识别不可用", e)
+            appUnlocked = true // 设备不支持时放行，避免锁死
         }
     }
 
@@ -291,7 +642,12 @@ class MainActivity : ComponentActivity() {
         val repository = remember { ProfileRepository.getInstance(this) }
         val profiles by repository.profiles.collectAsState(initial = emptyList())
         val faviconEnabled by repository.faviconEnabled.collectAsState(initial = false)
+        val appLockEnabled by repository.appLockEnabled.collectAsState(initial = false)
+        val secureFlagEnabled by repository.secureFlagEnabled.collectAsState(initial = false)
         val scope = rememberCoroutineScope()
+        // §4.9 导出/导入对话框状态
+        var showExportDialog by remember { mutableStateOf(false) }
+        var showImportDialog by remember { mutableStateOf(false) }
 
         when (val s = screen) {
             is Screen.List -> {
@@ -302,14 +658,57 @@ class MainActivity : ComponentActivity() {
                     onFaviconToggle = { enabled ->
                         scope.launch { repository.setFaviconEnabled(enabled) }
                     },
+                    appLockEnabled = appLockEnabled,
+                    onAppLockToggle = { enabled ->
+                        scope.launch {
+                            repository.setAppLockEnabled(enabled)
+                            if (enabled) {
+                                // 开启后立即要求验证一次，确保能用
+                                appUnlocked = false
+                                showBiometricPrompt()
+                            }
+                            Toast.makeText(
+                                this@MainActivity,
+                                if (enabled) "应用锁已开启" else "应用锁已关闭",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
+                    secureFlagEnabled = secureFlagEnabled,
+                    onSecureFlagToggle = { enabled ->
+                        scope.launch {
+                            repository.setSecureFlagEnabled(enabled)
+                            Toast.makeText(
+                                this@MainActivity,
+                                "重启 App 后生效",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
                     onLaunch = { profileId ->
                         val profile = profiles.find { it.id == profileId } ?: return@ProfileListScreen
                         launchBrowser(profile)
                     },
                     onKill = { profileId -> killProfileProcess(profileId) },
                     onEdit = { profileId -> screen = Screen.Settings(profileId) },
-                    onAdd = { screen = Screen.Settings(null) }
+                    onAdd = { screen = Screen.Settings(null) },
+                    onExportAll = { showExportDialog = true },
+                    onImport = { showImportDialog = true }
                 )
+                // §4.9 导出/导入对话框
+                if (showExportDialog) {
+                    ExportDialog(
+                        profiles = profiles,
+                        onDismiss = { showExportDialog = false },
+                        onExported = { showExportDialog = false }
+                    )
+                }
+                if (showImportDialog) {
+                    ImportDialog(
+                        onDismiss = { showImportDialog = false },
+                        onImported = { showImportDialog = false }
+                    )
+                }
             }
             is Screen.Settings -> {
                 val editing = profiles.find { it.id == s.profileId }

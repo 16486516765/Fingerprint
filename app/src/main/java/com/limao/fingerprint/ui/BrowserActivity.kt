@@ -33,6 +33,24 @@ open class BrowserActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // §4.10 防截屏：根据设置应用 FLAG_SECURE（浏览器进程也要防）
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val secure = kotlinx.coroutines.flow.first(
+                    ProfileRepository.getInstance(this@BrowserActivity).secureFlagEnabled
+                )
+                if (secure) {
+                    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
+                        window.setFlags(
+                            android.view.WindowManager.LayoutParams.FLAG_SECURE,
+                            android.view.WindowManager.LayoutParams.FLAG_SECURE
+                        )
+                    }
+                }
+            } catch (e: Exception) {
+                android.util.Log.w("BrowserActivity", "FLAG_SECURE 设置失败", e)
+            }
+        }
         val profileId = intent.getStringExtra(EXTRA_PROFILE_ID)
         if (profileId.isNullOrBlank()) {
             finish()

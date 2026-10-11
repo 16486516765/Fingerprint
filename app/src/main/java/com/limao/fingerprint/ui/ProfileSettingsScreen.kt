@@ -34,6 +34,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -54,10 +55,13 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.limao.fingerprint.data.DeviceTemplates
+import com.limao.fingerprint.data.FpConfig
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.data.ProxyType
 import com.limao.fingerprint.data.UaPresets
+import com.limao.fingerprint.data.generateFpSeed
 
 private val BgColor = Color(0xFF000000)
 private val CardColor = Color(0xFF151B24)
@@ -108,11 +112,63 @@ fun ProfileSettingsScreen(
     var proxyPort by remember { mutableStateOf(profile?.proxyPort?.toString() ?: "1080") }
     var proxyUser by remember { mutableStateOf(savedCreds.first) }
     var proxyPass by remember { mutableStateOf(savedCreds.second) }
+    // 指纹伪装（§4.3）
+    // 初始模板：编辑时按 fpConfig 反查模板，对不上就是"自定义"；新建时随机抽一套
+    val initialFp: FpConfig = profile?.fpConfig ?: DeviceTemplates.randomTemplate().config
+    var fpSeed by remember {
+        mutableStateOf(
+            profile?.fpSeed?.takeIf { it != 0L } ?: generateFpSeed()
+        )
+    }
+    var fpTemplateLabel by remember {
+        mutableStateOf(
+            profile?.fpConfig?.let { DeviceTemplates.findByConfig(it)?.displayName }
+                ?: DeviceTemplates.findByConfig(initialFp)?.displayName
+                ?: DeviceTemplates.CUSTOM_LABEL
+        )
+    }
+    var fpTemplateExpanded by remember { mutableStateOf(false) }
+    var fpScreenW by remember { mutableStateOf(initialFp.screenW.toString()) }
+    var fpScreenH by remember { mutableStateOf(initialFp.screenH.toString()) }
+    var fpDpr by remember { mutableStateOf(initialFp.dpr.toString()) }
+    var fpCores by remember { mutableStateOf(initialFp.cores.toString()) }
+    var fpMem by remember { mutableStateOf(initialFp.memGb.toString()) }
+    var fpPlatform by remember { mutableStateOf(initialFp.platform) }
+    var fpLanguages by remember { mutableStateOf(initialFp.languages.joinToString(", ")) }
+    var fpTimezone by remember { mutableStateOf(initialFp.timezone) }
+    var fpWebglVendor by remember { mutableStateOf(initialFp.webglVendor) }
+    var fpWebglRenderer by remember { mutableStateOf(initialFp.webglRenderer) }
+    var fpCanvasNoise by remember { mutableStateOf(initialFp.canvasNoise) }
+    var fpWebrtcAllow by remember { mutableStateOf(initialFp.webrtcMode == 1) }
     // 校验与对话框
     var nameError by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     val isCustomUa = uaLabel == UaPresets.CUSTOM_LABEL
+    val isCustomFp = fpTemplateLabel == DeviceTemplates.CUSTOM_LABEL
+
+    /** 把一套模板配置填入表单 */
+    fun applyFpTemplate(t: DeviceTemplates.DeviceTemplate) {
+        fpTemplateLabel = t.displayName
+        val c = t.config
+        fpScreenW = c.screenW.toString()
+        fpScreenH = c.screenH.toString()
+        fpDpr = c.dpr.toString()
+        fpCores = c.cores.toString()
+        fpMem = c.memGb.toString()
+        fpPlatform = c.platform
+        fpLanguages = c.languages.joinToString(", ")
+        fpTimezone = c.timezone
+        fpWebglVendor = c.webglVendor
+        fpWebglRenderer = c.webglRenderer
+        fpCanvasNoise = c.canvasNoise
+        fpWebrtcAllow = c.webrtcMode == 1
+    }
+
+    /** 用户手改了任一指纹字段：自动切到"自定义"，避免显示的模板名与实际值不一致 */
+    fun markFpCustom() {
+        if (!isCustomFp) fpTemplateLabel = DeviceTemplates.CUSTOM_LABEL
+    }
 
     fun doSave() {
         if (name.isBlank()) {
@@ -122,6 +178,24 @@ fun ProfileSettingsScreen(
         val ua = if (isCustomUa) customUa.trim() else {
             UaPresets.presets.find { it.displayName == uaLabel }?.ua ?: ""
         }
+        val fpConfig = FpConfig(
+            screenW = fpScreenW.toIntOrNull()?.coerceIn(1, 8192) ?: 1080,
+            screenH = fpScreenH.toIntOrNull()?.coerceIn(1, 8192) ?: 2400,
+            dpr = fpDpr.toFloatOrNull()?.coerceIn(0.5f, 6f) ?: 2.625f,
+            cores = fpCores.toIntOrNull()?.coerceIn(1, 32) ?: 8,
+            memGb = fpMem.toIntOrNull()?.coerceIn(1, 8) ?: 8,
+            platform = fpPlatform.trim().ifBlank { "Linux armv8l" },
+            languages = fpLanguages.split(",").map { it.trim() }
+                .filter { it.isNotBlank() }.ifEmpty { listOf("en-US", "en") },
+            timezone = fpTimezone.trim().ifBlank { "America/New_York" },
+            webglVendor = fpWebglVendor.trim().ifBlank { "Google Inc." },
+            webglRenderer = fpWebglRenderer.trim(),
+            canvasNoise = fpCanvasNoise,
+            // UI 暂不暴露 AudioContext 开关，保持原值（默认开）
+            audioNoise = profile?.fpConfig?.audioNoise ?: true,
+            webrtcMode = if (fpWebrtcAllow) 1 else 0
+        )
+        val seed = if (fpSeed == 0L) generateFpSeed() else fpSeed
         val base = profile ?: Profile()
         // P0-4：凭据单独传递，不进 Profile JSON
         onSave(
@@ -134,7 +208,9 @@ fun ProfileSettingsScreen(
                 proxyHost = proxyHost.trim(),
                 proxyPort = proxyPort.toIntOrNull()?.coerceIn(1, 65535) ?: 1080,
                 proxyUsername = "",
-                proxyPassword = ""
+                proxyPassword = "",
+                fpSeed = seed,
+                fpConfig = fpConfig
             ),
             proxyUser.trim(),
             proxyPass
@@ -261,6 +337,194 @@ fun ProfileSettingsScreen(
                         colors = fieldColors(),
                         shape = RoundedCornerShape(12.dp),
                         minLines = 2
+                    )
+                }
+            }
+
+            // 指纹伪装（§4.3）
+            FormField(label = "指纹伪装") {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(CardColor)
+                        .padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    // 随机种子行
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "随机种子：$fpSeed",
+                            color = Color.White,
+                            fontSize = 13.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        TextButton(onClick = { fpSeed = generateFpSeed() }) {
+                            Text("重新生成", color = AccentColor, fontSize = 13.sp)
+                        }
+                    }
+                    // 设备模板下拉
+                    ExposedDropdownMenuBox(
+                        expanded = fpTemplateExpanded,
+                        onExpandedChange = { fpTemplateExpanded = !fpTemplateExpanded }
+                    ) {
+                        OutlinedTextField(
+                            value = fpTemplateLabel,
+                            onValueChange = {},
+                            readOnly = true,
+                            label = { Text("设备模板", color = Color.Gray, fontSize = 12.sp) },
+                            trailingIcon = {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = fpTemplateExpanded)
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .menuAnchor(),
+                            colors = fieldColors(),
+                            shape = RoundedCornerShape(12.dp)
+                        )
+                        ExposedDropdownMenu(
+                            expanded = fpTemplateExpanded,
+                            onDismissRequest = { fpTemplateExpanded = false },
+                            modifier = Modifier.background(CardColor)
+                        ) {
+                            (DeviceTemplates.all.map { it.displayName } +
+                                DeviceTemplates.CUSTOM_LABEL)
+                                .forEach { label ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Text(label, color = Color.White, fontSize = 14.sp)
+                                        },
+                                        onClick = {
+                                            fpTemplateExpanded = false
+                                            if (label == DeviceTemplates.CUSTOM_LABEL) {
+                                                fpTemplateLabel = label
+                                            } else {
+                                                DeviceTemplates.all
+                                                    .find { it.displayName == label }
+                                                    ?.let(::applyFpTemplate)
+                                            }
+                                        }
+                                    )
+                                }
+                        }
+                    }
+                    // 随机生成一套
+                    Button(
+                        onClick = {
+                            applyFpTemplate(DeviceTemplates.randomTemplate())
+                            fpSeed = generateFpSeed()
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF232C38)),
+                        shape = RoundedCornerShape(12.dp)
+                    ) {
+                        Text("随机生成一套", color = Color.White, fontSize = 14.sp)
+                    }
+                    if (isCustomFp) {
+                        // 自定义可编辑项
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FpNumberField(
+                                label = "屏幕宽",
+                                value = fpScreenW,
+                                onChange = { fpScreenW = it; markFpCustom() },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FpNumberField(
+                                label = "屏幕高",
+                                value = fpScreenH,
+                                onChange = { fpScreenH = it; markFpCustom() },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FpNumberField(
+                                label = "dpr",
+                                value = fpDpr,
+                                onChange = { fpDpr = it; markFpCustom() },
+                                decimal = true,
+                                modifier = Modifier.weight(1f)
+                            )
+                            FpNumberField(
+                                label = "核心数",
+                                value = fpCores,
+                                onChange = { fpCores = it; markFpCustom() },
+                                modifier = Modifier.weight(1f)
+                            )
+                            FpNumberField(
+                                label = "内存(GB)",
+                                value = fpMem,
+                                onChange = { fpMem = it; markFpCustom() },
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                        FpTextField(
+                            label = "platform",
+                            value = fpPlatform,
+                            onChange = { fpPlatform = it; markFpCustom() }
+                        )
+                        FpTextField(
+                            label = "语言（逗号分隔）",
+                            value = fpLanguages,
+                            onChange = { fpLanguages = it; markFpCustom() }
+                        )
+                        FpTextField(
+                            label = "时区（如 America/New_York）",
+                            value = fpTimezone,
+                            onChange = { fpTimezone = it; markFpCustom() }
+                        )
+                        FpTextField(
+                            label = "WebGL vendor",
+                            value = fpWebglVendor,
+                            onChange = { fpWebglVendor = it; markFpCustom() }
+                        )
+                        FpTextField(
+                            label = "WebGL renderer",
+                            value = fpWebglRenderer,
+                            onChange = { fpWebglRenderer = it; markFpCustom() }
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "Canvas 噪声",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Switch(
+                                checked = fpCanvasNoise,
+                                onCheckedChange = { fpCanvasNoise = it; markFpCustom() }
+                            )
+                        }
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                "WebRTC",
+                                color = Color.White,
+                                fontSize = 14.sp,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Text(
+                                if (fpWebrtcAllow) "允许" else "禁用",
+                                color = Color(0xFF9AA4B2),
+                                fontSize = 13.sp,
+                                modifier = Modifier.padding(end = 8.dp)
+                            )
+                            Switch(
+                                checked = fpWebrtcAllow,
+                                onCheckedChange = { fpWebrtcAllow = it; markFpCustom() }
+                            )
+                        }
+                    } else {
+                        // 模板摘要
+                        Text(
+                            "${fpScreenW}×${fpScreenH} · dpr $fpDpr · " +
+                                "${fpCores} 核 · ${fpMem}GB · $fpTimezone",
+                            color = Color(0xFF9AA4B2),
+                            fontSize = 12.sp
+                        )
+                    }
+                    Text(
+                        "提示：同一 profile 种子固定，指纹稳定；不同 profile 用不同种子+模板，避免关联。",
+                        color = Color(0xFF5A6675),
+                        fontSize = 12.sp
                     )
                 }
             }
@@ -475,6 +739,51 @@ private fun FormField(label: String, content: @Composable () -> Unit) {
         )
         content()
     }
+}
+
+/** 指纹伪装分组内的文本输入框 */
+@Composable
+private fun FpTextField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text(label, color = Color.Gray, fontSize = 12.sp) },
+        singleLine = true,
+        modifier = modifier.fillMaxWidth(),
+        colors = fieldColors(),
+        shape = RoundedCornerShape(12.dp)
+    )
+}
+
+/** 指纹伪装分组内的数字输入框 */
+@Composable
+private fun FpNumberField(
+    label: String,
+    value: String,
+    onChange: (String) -> Unit,
+    decimal: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = {
+            onChange(if (decimal) it.filter { c -> c.isDigit() || c == '.' }
+            else it.filter { c -> c.isDigit() })
+        },
+        label = { Text(label, color = Color.Gray, fontSize = 12.sp) },
+        singleLine = true,
+        modifier = modifier.fillMaxWidth(),
+        colors = fieldColors(),
+        shape = RoundedCornerShape(12.dp),
+        keyboardOptions = KeyboardOptions(
+            keyboardType = if (decimal) KeyboardType.Decimal else KeyboardType.Number
+        )
+    )
 }
 
 /** 深色输入框统一样式 */

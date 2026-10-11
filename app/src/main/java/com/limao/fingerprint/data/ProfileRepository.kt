@@ -41,6 +41,18 @@ private val KEY_PROFILE_LIST_PREV =
 private val KEY_PROFILE_LIST_CORRUPTED =
     androidx.datastore.preferences.core.booleanPreferencesKey("profile_list_corrupted")
 
+/** 指纹配置迁移完成标记的 key（§4.3：旧数据补 fpSeed） */
+private val KEY_FP_MIGRATED =
+    androidx.datastore.preferences.core.booleanPreferencesKey("fp_config_migrated")
+
+/** §4.10 应用锁开关的 key（默认关闭） */
+private val KEY_APP_LOCK_ENABLED =
+    androidx.datastore.preferences.core.booleanPreferencesKey("app_lock_enabled")
+
+/** §4.10 防截屏（FLAG_SECURE）开关的 key（默认关闭） */
+private val KEY_SECURE_FLAG_ENABLED =
+    androidx.datastore.preferences.core.booleanPreferencesKey("secure_flag_enabled")
+
 /**
  * 最大 profile 数量。
  * 每个 profile 独占一个 :wvN 进程（WebView 是内存大户），6 是手机端的实际上限。
@@ -76,6 +88,28 @@ class ProfileRepository private constructor(private val appContext: Context) {
     suspend fun setFaviconEnabled(enabled: Boolean) {
         appContext.profileDataStore.edit { prefs ->
             prefs[KEY_FAVICON_ENABLED] = enabled
+        }
+    }
+
+    /** §4.10 应用锁开关（默认 false） */
+    val appLockEnabled: Flow<Boolean> = appContext.profileDataStore.data
+        .map { prefs -> prefs[KEY_APP_LOCK_ENABLED] ?: false }
+
+    /** 设置应用锁开关 */
+    suspend fun setAppLockEnabled(enabled: Boolean) {
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_APP_LOCK_ENABLED] = enabled
+        }
+    }
+
+    /** §4.10 防截屏开关（默认 false） */
+    val secureFlagEnabled: Flow<Boolean> = appContext.profileDataStore.data
+        .map { prefs -> prefs[KEY_SECURE_FLAG_ENABLED] ?: false }
+
+    /** 设置防截屏开关 */
+    suspend fun setSecureFlagEnabled(enabled: Boolean) {
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_SECURE_FLAG_ENABLED] = enabled
         }
     }
 
@@ -161,7 +195,16 @@ class ProfileRepository private constructor(private val appContext: Context) {
     private fun readList(json: String?): List<Profile> {
         if (json.isNullOrBlank()) return emptyList()
         return try {
-            gson.fromJson<List<Profile>>(json, listType) ?: emptyList()
+            val list = gson.fromJson<List<Profile>>(json, listType) ?: emptyList()
+            // §4.3 兼容旧数据：Gson 对缺失字段填 JVM 默认值
+            // （Kotlin 构造器默认值不生效），旧 JSON 没有 fpConfig，
+            // 字段会是 null，这里归一化为默认实例避免空指针。
+            // fpSeed 缺失时是 0L，正好是"未生成"哨兵值，
+            // 由 migrateFpConfigIfNeeded() 补生成。
+            list.map { p ->
+                @Suppress("SENSELESS_COMPARISON")
+                if (p.fpConfig == null) p.copy(fpConfig = FpConfig()) else p
+            }
         } catch (e: Exception) {
             android.util.Log.e("ProfileRepository", "Profile JSON 解析失败（已标记损坏，不覆盖原数据）", e)
             // 标记损坏，由调用方决定是否备份；这里只返回空列表供 UI 显示
@@ -302,6 +345,36 @@ class ProfileRepository private constructor(private val appContext: Context) {
             prefs[KEY_CREDENTIALS_MIGRATED] = true
         }
         android.util.Log.i("ProfileRepository", "凭据迁移完成，共 $migratedCount 个 profile")
+    }
+
+    /**
+     * §4.3 一次性迁移：fpSeed==0（旧数据，未生成）的 profile 补生成随机种子，
+     * 并抽一套真实设备模板作为指纹配置（避免所有老 profile 指纹雷同）。
+     * fpSeed 一旦生成永不改变，保证同一 profile 指纹稳定。
+     *
+     * 只应在主进程调用一次（MainActivity.onCreate）。
+     */
+    suspend fun migrateFpConfigIfNeeded() {
+        val prefs = appContext.profileDataStore.data.first()
+        if (prefs[KEY_FP_MIGRATED] == true) return
+
+        var migratedCount = 0
+        // mutate() 会自动剥离明文凭据字段（见上），此处只关心指纹字段
+        mutate { list ->
+            list.map { p ->
+                if (p.fpSeed == 0L) {
+                    migratedCount++
+                    p.copy(
+                        fpSeed = generateFpSeed(),
+                        fpConfig = DeviceTemplates.randomTemplate().config
+                    )
+                } else p
+            }
+        }
+        appContext.profileDataStore.edit { p ->
+            p[KEY_FP_MIGRATED] = true
+        }
+        android.util.Log.i("ProfileRepository", "指纹配置迁移完成，共 $migratedCount 个 profile")
     }
 
     companion object {
