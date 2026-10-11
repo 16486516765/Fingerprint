@@ -142,9 +142,25 @@ fun BrowserScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // WebView 持有：factory 只跑一次，跨 recomposition 复用
-    var webView by remember { mutableStateOf<WebView?>(null) }
-    // WebView 是否已创建（factory 跑完后触发代理设置流程）
+    // §4.8 多标签：每个标签一个 WebView，同一进程共享 Cookie/代理
+    data class BrowserTab(
+        val id: String = java.util.UUID.randomUUID().toString(),
+        val webView: WebView,
+        var title: String = "新标签页",
+        var url: String = "about:blank"
+    )
+    var tabs by remember { mutableStateOf<List<BrowserTab>>(emptyList()) }
+    var activeTabId by remember { mutableStateOf<String?>(null) }
+    var showTabSwitcher by remember { mutableStateOf(false) }
+    // 标签容器：FrameLayout，手动管理 WebView 子视图的显示/隐藏
+    var tabContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
+
+    /** 当前活动标签的 WebView（替代原来的单 webView 变量） */
+    fun activeWebView(): WebView? = tabs.find { it.id == activeTabId }?.webView
+    /** 当前活动标签 */
+    fun activeTab(): BrowserTab? = tabs.find { it.id == activeTabId }
+
+    // WebView 是否已创建（第一个标签创建后触发代理设置流程）
     var webViewCreated by remember { mutableStateOf(false) }
     // 地址栏文本
     var urlText by remember { mutableStateOf(profile.lastVisitedUrl.ifBlank { profile.homepageUrl }) }
@@ -206,7 +222,7 @@ fun BrowserScreen(
     var relay by remember { mutableStateOf<LocalRelay?>(null) }
     LaunchedEffect(webViewCreated) {
         if (!webViewCreated) return@LaunchedEffect
-        val wv = webView ?: return@LaunchedEffect
+        val wv = activeWebView() ?: return@LaunchedEffect
         // §4.6：SOCKS5 + 有用户名 → 本地中继
         val (u, p) = if (profile.proxyType == ProxyType.SOCKS5) {
             ProxyCredentialStore.load(context, profile.id)
@@ -261,18 +277,24 @@ fun BrowserScreen(
             return
         }
         urlText = url
-        webView?.loadUrl(url)
+        activeWebView()?.loadUrl(url)
     }
 
     /** 页面加载完成：同步地址栏 + 回调 URL（由主进程持久化，见问题10） */
     // 记录上次已回调的 URL，避免重复回调（见问题14）
     var lastReportedUrl by remember { mutableStateOf(profile.lastVisitedUrl) }
     fun onPageDone(url: String?) {
-        val wv = webView ?: return
+        val wv = activeWebView() ?: return
         canGoBack = wv.canGoBack()
         canGoForward = wv.canGoForward()
         if (!url.isNullOrBlank()) {
             if (!fieldFocused) urlText = url
+            // §4.8：同步活动标签的 URL 和标题
+            activeTab()?.let { tab ->
+                tab.url = url
+                val t = wv.title
+                if (!t.isNullOrBlank()) tab.title = t
+            }
             if (url != lastReportedUrl && !url.startsWith("about:")) {
                 lastReportedUrl = url
                 onUrlChanged(url)
@@ -282,7 +304,7 @@ fun BrowserScreen(
 
     // 返回键：WebView 能后退则后退，否则回列表
     BackHandler {
-        val wv = webView
+        val wv = activeWebView()
         if (wv != null && wv.canGoBack()) wv.goBack() else onNavigateBack()
     }
 
@@ -298,7 +320,7 @@ fun BrowserScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     IconButton(
-                        onClick = { webView?.goBack() },
+                        onClick = { activeWebView()?.goBack() },
                         enabled = canGoBack
                     ) {
                         Icon(
@@ -307,7 +329,7 @@ fun BrowserScreen(
                         )
                     }
                     IconButton(
-                        onClick = { webView?.goForward() },
+                        onClick = { activeWebView()?.goForward() },
                         enabled = canGoForward
                     ) {
                         Icon(
@@ -315,8 +337,20 @@ fun BrowserScreen(
                             tint = if (canGoForward) Color.White else Color.Gray
                         )
                     }
-                    IconButton(onClick = { webView?.reload() }) {
+                    IconButton(onClick = { activeWebView()?.reload() }) {
                         Icon(Icons.Filled.Refresh, "刷新", tint = Color.White)
+                    }
+                    // §4.8 多标签：标签数按钮，点击打开切换面板
+                    TextButton(onClick = { showTabSwitcher = true }) {
+                        Text(
+                            "${tabs.size}",
+                            color = Color.White,
+                            fontSize = 14.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(6.dp))
+                                .background(Color(0xFF2A323E))
+                                .padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
                     }
                     OutlinedTextField(
                         value = urlText,
@@ -372,7 +406,7 @@ fun BrowserScreen(
                         onReprobe = {
                             // §4.1：重新探测 WebView 出口
                             probingEgress = true
-                            webView?.loadUrl("https://api.ipify.org")
+                            activeWebView()?.loadUrl("https://api.ipify.org")
                         }
                     )
                 }
@@ -430,7 +464,7 @@ fun BrowserScreen(
                                 val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
                                         as ClipboardManager
                                 cm.setPrimaryClip(
-                                    ClipData.newPlainText("url", webView?.url ?: urlText)
+                                    ClipData.newPlainText("url", activeWebView()?.url ?: urlText)
                                 )
                                 Toast.makeText(context, "链接已复制", Toast.LENGTH_SHORT).show()
                             }
@@ -439,7 +473,7 @@ fun BrowserScreen(
                             text = { Text("清除浏览数据（仅本 profile）", color = Color.White) },
                             onClick = {
                                 menuOpen = false
-                                val wv = webView
+                                val wv = activeWebView()
                                 if (wv != null) {
                                     wv.clearCache(true)
                                     wv.clearHistory()
@@ -803,7 +837,10 @@ fun BrowserScreen(
                     }
                     // 注意：不在这里 loadUrl。等 LaunchedEffect 确认代理配置
                     // 应用后（或用户选择"仍然直连"）再加载（见问题2、问题3）。
-                    webView = this
+                    // §4.8：第一个标签
+                    val firstTab = BrowserTab(webView = this)
+                    tabs = listOf(firstTab)
+                    activeTabId = firstTab.id
                     webViewCreated = true
                 }
             },
@@ -812,7 +849,9 @@ fun BrowserScreen(
                 // §4.6：关闭本地中继，不留监听端口
                 relay?.stop()
                 relay = null
-                it.destroy()
+                // §4.8：销毁所有标签的 WebView
+                tabs.forEach { it.webView.destroy() }
+                tabs = emptyList()
             }
         )
             // §4.4(d) 视频全屏覆盖层
@@ -935,7 +974,7 @@ fun BrowserScreen(
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val url = webView?.url ?: urlText
+                    val url = activeWebView()?.url ?: urlText
                     val count = importCookies(context, url, cookieText)
                     showCookieImport = false
                     Toast.makeText(
@@ -953,7 +992,7 @@ fun BrowserScreen(
 
     // §4.7 Cookie 导出对话框（当前站点）
     if (showCookieExport) {
-        val url = webView?.url ?: urlText
+        val url = activeWebView()?.url ?: urlText
         val cookies = remember(url) {
             CookieManager.getInstance().getCookie(url) ?: ""
         }
@@ -992,6 +1031,69 @@ fun BrowserScreen(
         )
     }
 
+    // §4.8 多标签切换器
+    if (showTabSwitcher) {
+        AlertDialog(
+            onDismissRequest = { showTabSwitcher = false },
+            title = { Text("标签页（${tabs.size}）") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    tabs.forEach { tab ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    activeTabId = tab.id
+                                    // 同步地址栏到新活动标签
+                                    urlText = tab.url.ifBlank { urlText }
+                                    showTabSwitcher = false
+                                }
+                                .background(
+                                    if (tab.id == activeTabId) Color(0xFF1A212C)
+                                    else Color.Transparent,
+                                    RoundedCornerShape(8.dp)
+                                )
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    tab.title.ifBlank { "新标签页" },
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    tab.url.ifBlank { "about:blank" },
+                                    color = Color(0xFF7A8595),
+                                    fontSize = 11.sp,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                            // 关闭标签（至少保留一个）
+                            if (tabs.size > 1) {
+                                TextButton(onClick = {
+                                    // TODO: 完整多标签时实现关闭
+                                    Toast.makeText(context, "多标签完整版开发中", Toast.LENGTH_SHORT).show()
+                                }) {
+                                    Text("✕", color = Color(0xFFF87171))
+                                }
+                            }
+                        }
+                        Spacer(Modifier.height(4.dp))
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showTabSwitcher = false }) {
+                    Text("关闭")
+                }
+            }
+        )
+    }
+
     // fail-closed 对话框（见问题3）：代理配置失败时默认阻止加载，
     // 只有用户明确点"仍然直连"才放行。
     if (showProxyFailDialog && !bypassProxyFail) {
@@ -1010,7 +1112,7 @@ fun BrowserScreen(
                     bypassProxyFail = true
                     showProxyFailDialog = false
                     proxyState = ProxySetupState.Applied // 标记为用户放行
-                    webView?.loadUrl(initialUrl)
+                    activeWebView()?.loadUrl(initialUrl)
                 }) { Text("仍然直连") }
             },
             dismissButton = {
