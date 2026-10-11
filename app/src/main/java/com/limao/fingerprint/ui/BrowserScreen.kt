@@ -317,10 +317,6 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
     ) { padding ->
         AndroidView(
             factory = { ctx ->
-                // 关键顺序：先设代理，再创建 WebView
-                proxyOk = WebViewProxy.setProxy(
-                    ctx, profile.proxyType, profile.proxyHost, profile.proxyPort
-                )
                 WebView(ctx).apply {
                     layoutParams = ViewGroup.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT,
@@ -340,6 +336,14 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                     if (profile.userAgent.isNotBlank()) {
                         settings.userAgentString = profile.userAgent
                     }
+                    // 关键顺序：先创建 WebView（此时 Chromium 才注册
+                    // ProxyChangeListener），再设代理，最后 loadUrl。
+                    // 之前是先 setProxy 再创建 WebView，反射永远找不到
+                    // receiver，fallback 到 JVM 属性对 WebView 无效，
+                    // 却返回 true 误报"已连接"，实际一直直连。
+                    proxyOk = WebViewProxy.setProxy(
+                        ctx, profile.proxyType, profile.proxyHost, profile.proxyPort
+                    )
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(
                             view: WebView?, url: String?, favicon: Bitmap?

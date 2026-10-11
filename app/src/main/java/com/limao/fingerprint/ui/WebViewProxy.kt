@@ -19,19 +19,19 @@ import com.limao.fingerprint.data.ProxyType
  * per-profile 代理——这正是多进程架构要解决的核心问题之一。
  *
  * 局限（v1 如实说明）：
- * - HTTP 代理：该反射方案在多数设备上有效。
- * - SOCKS5：公开 API 没有构造 SOCKS ProxyInfo 的方法，这里反射隐藏构造并
- *   叠加 JVM 的 socksProxyHost/socksProxyPort 属性兜底；Chromium 对 SOCKS 的
- *   实际支持因设备/系统版本而异，v1 不保证所有设备生效。
+ * - HTTP 代理：反射方案在多数设备上有效，但必须在 WebView 创建后调用。
+ * - SOCKS5：公开 API 没有构造 SOCKS ProxyInfo 的方法，这里反射隐藏构造；
+ *   Chromium 对 SOCKS 的实际支持因设备/系统版本而异，v1 不保证所有设备生效。
  * - 若设置失败返回 false，调用方在 UI 状态条显示"代理设置失败，已降级直连"，
- *   不静默失败。
+ *   不静默失败、不谎报成功。
  */
 object WebViewProxy {
 
     private const val TAG = "WebViewProxy"
 
     /**
-     * 设置当前进程的 WebView 代理，必须在创建 WebView 之前调用。
+     * 设置当前进程的 WebView 代理，必须在创建 WebView **之后**、loadUrl 之前调用
+     *（ProxyChangeListener 是 WebView 初始化时才注册的）。
      * @return true 成功（或无需设置）；false 失败，调用方应降级直连并提示用户。
      */
     fun setProxy(context: Context, type: ProxyType, host: String, port: Int): Boolean {
@@ -41,15 +41,16 @@ object WebViewProxy {
             return false
         }
         return try {
-            // 主方案：ProxyChangeListener 反射（对 WebView 最直接有效）
             if (dispatchProxyChange(context, type, host, port)) {
                 Log.i(TAG, "代理已通过 ProxyChangeListener 生效: $type $host:$port")
-                return true
+                true
+            } else {
+                // 注意：JVM 系统属性（http.proxyHost 等）Chromium 不读，
+                // 对 WebView 无效。这里不再 fallback 谎报成功，直接返回 false，
+                // 让 UI 如实显示"代理设置失败"。
+                Log.w(TAG, "ProxyChangeListener 反射失败，WebView 代理未生效")
+                false
             }
-            // 降级：JVM 系统属性（HttpURLConnection 必有效，部分 WebView 版本也读这些）
-            setJvmProperties(type, host, port)
-            Log.i(TAG, "代理已通过 JVM 系统属性设置（降级方案）: $type $host:$port")
-            true
         } catch (e: Exception) {
             Log.w(TAG, "代理设置失败", e)
             false
@@ -146,20 +147,4 @@ object WebViewProxy {
         }
     }
 
-    /** 降级方案：JVM 系统属性 */
-    private fun setJvmProperties(type: ProxyType, host: String, port: Int) {
-        when (type) {
-            ProxyType.HTTP -> {
-                System.setProperty("http.proxyHost", host)
-                System.setProperty("http.proxyPort", port.toString())
-                System.setProperty("https.proxyHost", host)
-                System.setProperty("https.proxyPort", port.toString())
-            }
-            ProxyType.SOCKS5 -> {
-                System.setProperty("socksProxyHost", host)
-                System.setProperty("socksProxyPort", port.toString())
-            }
-            ProxyType.NONE -> Unit
-        }
-    }
 }
