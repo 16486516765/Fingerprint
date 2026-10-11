@@ -100,11 +100,6 @@ data class Profile(
     val group: String = "未分组",
     /** 最后访问的 URL，列表页显示用 */
     val lastVisitedUrl: String = "",
-    /**
-     * 最近使用时间戳（启动浏览器时更新），列表页"最近使用"显示用。
-     * 0 表示从未启动过。旧数据反序列化时默认为 0。
-     */
-    val lastUsedAt: Long = 0L,
     /** 创建时间戳 */
     val createdAt: Long = System.currentTimeMillis(),
     /**
