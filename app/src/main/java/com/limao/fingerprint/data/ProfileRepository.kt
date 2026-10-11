@@ -18,6 +18,9 @@ private const val DATASTORE_NAME = "fingerprint_profiles"
 /** 存 Profile 列表 JSON 的 key */
 private val KEY_PROFILE_LIST = stringPreferencesKey("profile_list_json")
 
+/** 网站图标开关的 key（默认开；关闭后不请求 Google favicon 服务，保护隐私） */
+private val KEY_FAVICON_ENABLED = androidx.datastore.preferences.core.booleanPreferencesKey("favicon_enabled")
+
 /**
  * 最大 profile 数量。
  * 每个 profile 独占一个 :wvN 进程（WebView 是内存大户），6 是手机端的实际上限。
@@ -44,6 +47,17 @@ class ProfileRepository private constructor(private val appContext: Context) {
     /** 全部 profile 的观察流，UI 层用 collectAsState 订阅 */
     val profiles: Flow<List<Profile>> = appContext.profileDataStore.data
         .map { prefs -> readList(prefs[KEY_PROFILE_LIST]) }
+
+    /** 网站图标开关（默认 true） */
+    val faviconEnabled: Flow<Boolean> = appContext.profileDataStore.data
+        .map { prefs -> prefs[KEY_FAVICON_ENABLED] ?: true }
+
+    /** 设置网站图标开关 */
+    suspend fun setFaviconEnabled(enabled: Boolean) {
+        appContext.profileDataStore.edit { prefs ->
+            prefs[KEY_FAVICON_ENABLED] = enabled
+        }
+    }
 
     /**
      * 新增 profile，自动分配最小的空闲 slot（0 ~ MAX_PROFILES-1）。

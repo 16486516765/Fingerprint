@@ -73,6 +73,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProfileRepository
+import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.data.ProxyType
 import kotlinx.coroutines.launch
 
@@ -402,10 +403,16 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
                                 profile.proxyHost.isNotBlank() &&
                                 (host == profile.proxyHost ||
                                  host.endsWith(".${profile.proxyHost}"))
-                            if (isProxyAuth && profile.proxyUsername.isNotBlank()) {
-                                handler?.proceed(
-                                    profile.proxyUsername, profile.proxyPassword
-                                )
+                            if (isProxyAuth) {
+                                // 优先从加密存储读，老数据 fallback 明文字段
+                                val (u, p) = ProxyCredentialStore.load(ctx, profile.id)
+                                val username = u.ifBlank { profile.proxyUsername }
+                                val password = p.ifBlank { profile.proxyPassword }
+                                if (username.isNotBlank()) {
+                                    handler?.proceed(username, password)
+                                } else {
+                                    handler?.cancel()
+                                }
                             } else {
                                 handler?.cancel()
                             }

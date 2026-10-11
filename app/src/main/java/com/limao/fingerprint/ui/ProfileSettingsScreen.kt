@@ -81,6 +81,13 @@ fun ProfileSettingsScreen(
     onNavigateBack: () -> Unit
 ) {
     val isNew = profile == null
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // 代理凭据优先从加密存储读（老数据 fallback 到 profile 明文字段，做迁移）
+    val savedCreds = remember(profile?.id) {
+        if (profile != null) ProxyCredentialStore.load(context, profile.id)
+        else "" to ""
+    }
 
     var name by remember { mutableStateOf(profile?.name ?: "") }
     var homepageUrl by remember { mutableStateOf(profile?.homepageUrl ?: "") }
@@ -97,8 +104,8 @@ fun ProfileSettingsScreen(
     var proxyType by remember { mutableStateOf(profile?.proxyType ?: ProxyType.NONE) }
     var proxyHost by remember { mutableStateOf(profile?.proxyHost ?: "") }
     var proxyPort by remember { mutableStateOf(profile?.proxyPort?.toString() ?: "1080") }
-    var proxyUser by remember { mutableStateOf(profile?.proxyUsername ?: "") }
-    var proxyPass by remember { mutableStateOf(profile?.proxyPassword ?: "") }
+    var proxyUser by remember { mutableStateOf(savedCreds.first.ifBlank { profile?.proxyUsername ?: "" }) }
+    var proxyPass by remember { mutableStateOf(savedCreds.second.ifBlank { profile?.proxyPassword ?: "" }) }
     // 校验与对话框
     var nameError by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }

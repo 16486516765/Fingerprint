@@ -22,6 +22,7 @@ import androidx.compose.ui.graphics.Color
 import com.limao.fingerprint.data.NoFreeSlotException
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProfileRepository
+import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.ui.BrowserActivity
 import com.limao.fingerprint.ui.ProfileListScreen
 import com.limao.fingerprint.ui.ProfileSettingsScreen
@@ -79,6 +80,7 @@ class MainActivity : ComponentActivity() {
         var screen by remember { mutableStateOf<Screen>(Screen.List) }
         val repository = remember { ProfileRepository.getInstance(this) }
         val profiles by repository.profiles.collectAsState(initial = emptyList())
+        val faviconEnabled by repository.faviconEnabled.collectAsState(initial = true)
         val scope = rememberCoroutineScope()
 
         when (val s = screen) {
@@ -87,6 +89,10 @@ class MainActivity : ComponentActivity() {
                     profiles = profiles,
                     // v1：暂不追踪哪个 profile 正在运行，统一显示"启动"
                     activeProfileId = null,
+                    faviconEnabled = faviconEnabled,
+                    onFaviconToggle = { enabled ->
+                        scope.launch { repository.setFaviconEnabled(enabled) }
+                    },
                     onLaunch = { profileId ->
                         val profile = profiles.find { it.id == profileId } ?: return@ProfileListScreen
                         launchBrowser(profile)
@@ -104,13 +110,22 @@ class MainActivity : ComponentActivity() {
                             try {
                                 if (editing == null) {
                                     // 新建：自动分配 slot
-                                    repository.addProfile(draft)
+                                    val created = repository.addProfile(draft)
+                                    // 代理凭据存加密存储（与明文字段分离）
+                                    ProxyCredentialStore.save(
+                                        this@MainActivity, created.id,
+                                        draft.proxyUsername, draft.proxyPassword
+                                    )
                                     Toast.makeText(
                                         this@MainActivity, "Profile 已创建", Toast.LENGTH_SHORT
                                     ).show()
                                 } else {
                                     // 编辑：保留原 slot
                                     repository.updateProfile(draft.copy(slot = editing.slot))
+                                    ProxyCredentialStore.save(
+                                        this@MainActivity, editing.id,
+                                        draft.proxyUsername, draft.proxyPassword
+                                    )
                                 }
                                 screen = Screen.List
                             } catch (e: NoFreeSlotException) {
@@ -126,6 +141,8 @@ class MainActivity : ComponentActivity() {
                         scope.launch {
                             val slot = editing.slot
                             repository.deleteProfile(editing.id)
+                            // 清除加密存储中的代理凭据
+                            ProxyCredentialStore.clear(this@MainActivity, editing.id)
                             // 清理该 slot 的 WebView 数据目录（Cookie、缓存等）
                             clearWebViewDataDir(slot)
                             screen = Screen.List

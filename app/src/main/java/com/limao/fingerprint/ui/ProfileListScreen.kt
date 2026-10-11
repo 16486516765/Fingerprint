@@ -40,6 +40,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -93,6 +94,8 @@ private val RunningGreen = Color(0xFF1F7A44)
 fun ProfileListScreen(
     profiles: List<Profile>,
     activeProfileId: String?,
+    faviconEnabled: Boolean,
+    onFaviconToggle: (Boolean) -> Unit,
     onLaunch: (String) -> Unit,
     onEdit: (String) -> Unit,
     onAdd: () -> Unit
@@ -189,6 +192,24 @@ fun ProfileListScreen(
                                     }
                                     context.startActivity(emailIntent)
                                 }
+                            )
+                            DropdownMenuItem(
+                                text = {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.fillMaxWidth()
+                                    ) {
+                                        Text(
+                                            "加载网站图标",
+                                            modifier = Modifier.weight(1f)
+                                        )
+                                        Switch(
+                                            checked = faviconEnabled,
+                                            onCheckedChange = { onFaviconToggle(it) }
+                                        )
+                                    }
+                                },
+                                onClick = { onFaviconToggle(!faviconEnabled) }
                             )
                         }
                     }
@@ -371,10 +392,10 @@ private fun ProfileCard(
                 .padding(14.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            // 左侧：网站 favicon，加载失败显示默认指纹图标
-            val iconUrl = FaviconHelper.faviconUrlFor(
+            // 左侧：网站 favicon（可在菜单关闭，关闭后不请求 Google 服务），加载失败显示默认指纹图标
+            val iconUrl = if (faviconEnabled) FaviconHelper.faviconUrlFor(
                 FaviconHelper.pickUrl(profile.homepageUrl, profile.lastVisitedUrl)
-            )
+            ) else null
             Box(
                 modifier = Modifier
                     .size(48.dp)
