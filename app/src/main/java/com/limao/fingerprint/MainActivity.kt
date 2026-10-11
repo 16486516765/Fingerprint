@@ -529,6 +529,8 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                 val enabled = repository.appLockEnabled.first()
                 if (!enabled) {
                     appUnlocked = true
+                    // §4.10 跨进程：锁没开就顺手清掉残留文件，避免 :wvN 误拦
+                    com.limao.fingerprint.data.AppLockStore.clear(this@MainActivity)
                     return@launch
                 }
                 val needAuth = appUnlocked != true ||
@@ -560,6 +562,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     ) {
                         appUnlocked = true
                         lastBackgroundTime = 0
+                        // §4.10 跨进程：把验证成功时间写文件，:wvN 进程读它做宽限判断
+                        com.limao.fingerprint.data.AppLockStore.write(
+                            this@MainActivity, true, System.currentTimeMillis()
+                        )
                     }
 
                     override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
@@ -669,9 +675,17 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         scope.launch {
                             repository.setAppLockEnabled(enabled)
                             if (enabled) {
+                                // §4.10 跨进程：先写文件（verified_at=0 表示从未验证），
+                                // 这样 :wvN 进程即使在主进程弹窗被取消时也能正确要求验证
+                                com.limao.fingerprint.data.AppLockStore.write(
+                                    this@MainActivity, true, 0
+                                )
                                 // 开启后立即要求验证一次，确保能用
                                 appUnlocked = false
                                 showBiometricPrompt()
+                            } else {
+                                // §4.10 跨进程：关闭锁就删文件，:wvN 进程不再拦截
+                                com.limao.fingerprint.data.AppLockStore.clear(this@MainActivity)
                             }
                             Toast.makeText(
                                 this@MainActivity,
