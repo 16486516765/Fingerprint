@@ -7,6 +7,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -54,6 +55,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
+import com.limao.fingerprint.R
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -66,7 +70,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -150,12 +153,25 @@ fun ProfileListScreen(
             .sortedByDescending { it.createdAt }
     }
 
+    // 城市夜景背景 + 深色遮罩
+    Box(modifier = Modifier.fillMaxSize()) {
+        Image(
+            painter = painterResource(id = R.drawable.bg_city_night),
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF0A0E14).copy(alpha = 0.72f))
+        )
     Scaffold(
-        containerColor = BgColor,
+        containerColor = Color.Transparent,
         topBar = {
             TopAppBar(
                 title = { Text("Fingerprint", fontWeight = FontWeight.Bold) },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = BgColor),
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent),
                 actions = {
                     IconButton(onClick = {
                         searchOpen = !searchOpen
@@ -464,6 +480,7 @@ fun ProfileListScreen(
     }
 
     // 底部小字：环境总数（列表不为空时跟在内容后，这里简化为悬浮条太复杂，省略）
+    } // Box（背景层）
 }
 
 /** 分组筛选 chip */
@@ -509,7 +526,7 @@ private fun ProfileCard(
         label = "pressScale"
     )
     Surface(
-        color = CardColor,
+        color = CardColor.copy(alpha = 0.85f),
         shape = RoundedCornerShape(16.dp),
         modifier = modifier
             .fillMaxWidth()
