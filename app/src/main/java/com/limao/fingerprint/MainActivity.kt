@@ -81,8 +81,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     private var showCorruptDialog by mutableStateOf(false)
     /** §4.10 运行状态：:wvN 进程存活的 profile id 集合 */
     private var runningProfileIds by mutableStateOf<Set<String>>(emptySet())
-    /** §4.10 应用锁：本会话是否已通过验证 */
-    private var appUnlocked by mutableStateOf(true)
+    /** §4.10 应用锁：三态——null=检查中（冷启动先显示占位，不闪现主界面），
+        true=已验证，false=未验证。冷启动默认 null，必须走完 checkAppLock 才能进。 */
+    private var appUnlocked: Boolean? by mutableStateOf(null)
     /** §4.10 应用锁：上次切后台时间（超过 2 分钟回前台要重新验证） */
     private var lastBackgroundTime: Long = 0
 
@@ -124,11 +125,15 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         }
         setContent {
             FingerprintTheme {
-                // §4.10 应用锁：未验证时只显示锁定页
-                if (!appUnlocked) {
-                    AppLockScreen(onRetry = { showBiometricPrompt() })
-                } else {
-                    MainNav()
+                // §4.10 应用锁：检查中显示黑屏占位；未验证只显示锁定页
+                when (appUnlocked) {
+                    null -> androidx.compose.foundation.layout.Box(
+                        modifier = androidx.compose.ui.Modifier
+                            .fillMaxSize()
+                            .background(androidx.compose.ui.graphics.Color(0xFF000000))
+                    )
+                    false -> AppLockScreen(onRetry = { showBiometricPrompt() })
+                    true -> MainNav()
                 }
                 if (showCorruptDialog) {
                     CorruptDataDialog(
@@ -512,7 +517,9 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     }
 
     /**
-     * §4.10 应用锁：已开启且（未验证过 / 后台超过 2 分钟）时要求验证。
+     * §4.10 应用锁：已开启且（未验证过 / 冷启动 / 后台超过 2 分钟）时要求验证。
+     * 冷启动判断：lastBackgroundTime == 0 表示本进程从未切过后台，
+     * 此时内存里的 appUnlocked 是初始值、不可信，必须重新验证。
      * 用 BiometricPrompt（指纹/面容），降级可用设备 PIN/密码。
      */
     private fun checkAppLock() {
@@ -524,12 +531,14 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     appUnlocked = true
                     return@launch
                 }
-                val needAuth = !appUnlocked ||
-                    (lastBackgroundTime > 0 &&
-                        System.currentTimeMillis() - lastBackgroundTime > 2 * 60 * 1000)
+                val needAuth = appUnlocked != true ||
+                    lastBackgroundTime == 0L ||
+                    (System.currentTimeMillis() - lastBackgroundTime > 2 * 60 * 1000)
                 if (needAuth) {
                     appUnlocked = false
                     showBiometricPrompt()
+                } else {
+                    appUnlocked = true
                 }
             } catch (e: Exception) {
                 android.util.Log.w("MainActivity", "应用锁检查失败", e)
