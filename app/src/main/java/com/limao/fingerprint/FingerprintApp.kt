@@ -45,8 +45,8 @@ class FingerprintApp : Application() {
 
     /**
      * 取当前进程名。
-     * API 28+ 有 Application.getProcessName()；minSdk 26 需兼容 26/27，
-     * 低版本遍历 ActivityManager.getRunningAppProcesses() 按 pid 匹配。
+     * API 28+ 有 Application.getProcessName()；minSdk 已提至 28，
+     * 低版本分支保留仅作防御，正常不会走到。
      */
     private fun currentProcessName(): String? {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

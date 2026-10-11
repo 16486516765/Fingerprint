@@ -22,7 +22,8 @@ enum class ProxyType {
  * - 进程启动时（Application.onCreate）在创建任何 WebView 之前调用
  *   WebView.setDataDirectorySuffix()，因此每个 profile 拥有独立的
  *   Cookie jar / localStorage / IndexedDB / 缓存目录，进程级硬隔离。
- * - 代理也是进程级设置（反射），独立进程 = 天然 per-profile 代理。
+ * - 代理也是进程级设置（AndroidX WebKit ProxyController 公开接口），
+ *   独立进程 = 天然 per-profile 代理。
  * - 多个 profile 可同时在线，互不干扰。MAX_PROFILES = 6，受手机内存限制。
  */
 data class Profile(
