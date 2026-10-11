@@ -428,6 +428,10 @@ fun BrowserScreen(
                     // 注意：代理设置不在这里做。ProxyController 是异步的，
                     // 由 LaunchedEffect(webViewCreated) 等待配置应用后再 loadUrl
                     //（见问题2、问题3）。这里只创建 WebView。
+                    // BUG-10：代理认证失败保护。账号密码错误时代理返回 407，
+                    // WebView 会再次回调，无计数器会导致无限重试甚至触发
+                    // 代理侧封禁。第二次起直接 cancel 并标记失败。
+                    var authTried = 0
                     webViewClient = object : WebViewClient() {
                         override fun onPageStarted(
                             view: WebView?, url: String?, favicon: Bitmap?
@@ -482,6 +486,12 @@ fun BrowserScreen(
                                 profile.proxyType == ProxyType.HTTP &&
                                 host.equals(profile.proxyHost, ignoreCase = true)
                             if (isProxyAuth) {
+                                // BUG-10：失败保护，第二次回调说明上次的凭据被拒绝
+                                if (authTried++ >= 1) {
+                                    handler?.cancel()
+                                    proxyState = ProxySetupState.Failed("代理认证失败")
+                                    return
+                                }
                                 // 只从加密存储读（明文字段已迁移清空，见问题4）
                                 val (u, p) = ProxyCredentialStore.load(ctx, profile.id)
                                 if (u.isNotBlank()) {
