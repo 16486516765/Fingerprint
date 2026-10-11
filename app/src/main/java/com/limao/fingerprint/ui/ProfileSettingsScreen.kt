@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.limao.fingerprint.data.Profile
+import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.data.ProxyType
 import com.limao.fingerprint.data.UaPresets
 

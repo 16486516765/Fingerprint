@@ -54,6 +54,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -119,7 +120,7 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
     var proxyEffective by remember { mutableStateOf<Boolean?>(null) }
 
     // 代理配置成功后，后台测一次真实生效性（对比直连/代理出口 IP）
-    androidx.compose.runtime.LaunchedEffect(proxyOk) {
+    LaunchedEffect(proxyOk) {
         if (proxyOk == true && profile.proxyType != ProxyType.NONE) {
             proxyEffective = null // 检测中
             proxyEffective = WebViewProxy.testProxyEffective(
