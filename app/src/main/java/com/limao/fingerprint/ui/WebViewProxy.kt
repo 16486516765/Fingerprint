@@ -229,6 +229,22 @@ object WebViewProxy {
         } catch (e: Exception) {
             sb.appendLine("⑥ ProxyInfo 构造: 失败 - ${e.message}")
         }
+        sb.appendLine()
+
+        // ⑦ 代理服务器连通性：127.0.0.1:8080 上有没有东西在监听？
+        sb.appendLine("⑦ 代理服务器连通性测试:")
+        val testTargets = listOf("127.0.0.1:8080", "127.0.0.1:7890")
+        for (target in testTargets) {
+            val (h, p) = target.split(":")
+            try {
+                val socket = java.net.Socket()
+                socket.connect(java.net.InetSocketAddress(h, p.toInt()), 2000)
+                socket.close()
+                sb.appendLine("   $target: 有服务在监听 ✓")
+            } catch (e: Exception) {
+                sb.appendLine("   $target: 无响应 (${e.message})")
+            }
+        }
 
         return sb.toString()
     }
