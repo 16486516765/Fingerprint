@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- BUG-5：不备份任何应用数据。代理凭据的 Keystore 密钥不会随备份迁移，
+     恢复后会导致 EncryptedSharedPreferences 解密失败闪退；
+     DataStore 里的 URL 可能带 token，WebView 数据含 Cookie，都不应进备份。 -->
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="root" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="root" />
+    </device-transfer>
+</data-extraction-rules>
