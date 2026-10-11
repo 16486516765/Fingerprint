@@ -12,10 +12,11 @@ android {
 
     defaultConfig {
         applicationId = "com.limao.fingerprint"
-        minSdk = 26
+        // WebView.setDataDirectorySuffix 是 API 28 才有的，26/27 会崩，故最低 28
+        minSdk = 28
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

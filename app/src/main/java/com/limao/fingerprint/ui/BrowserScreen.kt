@@ -152,10 +152,8 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
             if (!fieldFocused) urlText = url
             if (url != profile.lastVisitedUrl && !url.startsWith("about:")) {
                 scope.launch {
-                    val latest = repository.getProfileById(profile.id)
-                    if (latest != null && latest.lastVisitedUrl != url) {
-                        repository.updateProfile(latest.copy(lastVisitedUrl = url))
-                    }
+                    // 只更新 lastVisitedUrl 单个字段，带重试，不抛异常
+                    repository.updateLastVisitedUrl(profile.id, url)
                 }
             }
         }

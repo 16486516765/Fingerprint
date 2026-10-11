@@ -124,10 +124,13 @@ class MainActivity : ComponentActivity() {
                     },
                     onDelete = if (editing == null) null else ({
                         scope.launch {
+                            val slot = editing.slot
                             repository.deleteProfile(editing.id)
+                            // 清理该 slot 的 WebView 数据目录（Cookie、缓存等）
+                            clearWebViewDataDir(slot)
                             screen = Screen.List
                             Toast.makeText(
-                                this@MainActivity, "已删除", Toast.LENGTH_SHORT
+                                this@MainActivity, "已删除，浏览数据已清除", Toast.LENGTH_SHORT
                             ).show()
                         }
                     }),
@@ -168,6 +171,37 @@ class MainActivity : ComponentActivity() {
                 "启动失败: ${e.message}",
                 android.widget.Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    /**
+     * 清理指定 slot 的 WebView 数据目录。
+     * 先尝试结束对应的 :wvN 进程，再递归删除 app_webview_fp_slot_N 目录。
+     */
+    private fun clearWebViewDataDir(slot: Int) {
+        if (slot < 0) return
+        try {
+            // 1. 结束对应的 :wvN 进程（避免文件被占用删不干净）
+            val targetSuffix = ":wv$slot"
+            val am = getSystemService(android.content.Context.ACTIVITY_SERVICE)
+                as android.app.ActivityManager
+            for (proc in am.runningAppProcesses ?: emptyList()) {
+                if (proc.processName.endsWith(targetSuffix)) {
+                    android.os.Process.killProcess(proc.pid)
+                    android.util.Log.i("FingerprintApp", "已结束进程 ${proc.processName}")
+                    break
+                }
+            }
+            // 给进程一点时间退出
+            Thread.sleep(300)
+            // 2. 删除数据目录
+            val dir = java.io.File(dataDir, "app_webview_fp_slot_$slot")
+            if (dir.exists()) {
+                val deleted = dir.deleteRecursively()
+                android.util.Log.i("FingerprintApp", "数据目录 ${dir.path} 删除: $deleted")
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("FingerprintApp", "清理数据目录失败", e)
         }
     }
 }

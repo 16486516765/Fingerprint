@@ -66,6 +66,28 @@ class ProfileRepository private constructor(private val appContext: Context) {
         mutate { list -> list.map { if (it.id == profile.id) profile else it } }
     }
 
+    /**
+     * 仅更新 lastVisitedUrl（供 :wvN 进程调用）。
+     * 多进程下 DataStore 可能竞写，失败时重试 3 次；最终失败也不抛异常，
+     * 只是丢失一次访问记录，不影响核心数据。
+     */
+    suspend fun updateLastVisitedUrl(id: String, url: String) {
+        repeat(3) { attempt ->
+            try {
+                mutate { list ->
+                    list.map { if (it.id == id) it.copy(lastVisitedUrl = url) else it }
+                }
+                return
+            } catch (e: Exception) {
+                if (attempt == 2) {
+                    android.util.Log.w("ProfileRepository", "updateLastVisitedUrl 失败(已重试)", e)
+                } else {
+                    kotlinx.coroutines.delay(100L * (attempt + 1))
+                }
+            }
+        }
+    }
+
     /** 删除 profile，其占用的 slot 自动释放（slot 从现存 profile 集合推导） */
     suspend fun deleteProfile(id: String) {
         mutate { list -> list.filterNot { it.id == id } }
