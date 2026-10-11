@@ -90,7 +90,6 @@ import com.limao.fingerprint.data.ProfileRepository
 import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.data.ProxyType
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.resume
 
 private val BgColor = Color(0xFF000000)
 private val BarColor = Color(0xFF0A0E14)
@@ -1327,9 +1326,9 @@ private suspend fun downloadFile(
                                 if (cont.isActive) {
                                     val r = result
                                     if (r == null || r == "ERROR" || r == "\"ERROR\"") {
-                                        cont.resume(null)
+                                        cont.resume(null, null)
                                     } else {
-                                        cont.resume(r.trim('"'))
+                                        cont.resume(r.trim('"'), null)
                                     }
                                 }
                             }.start()
