@@ -163,6 +163,9 @@ fun BrowserScreen(
     var bypassProxyFail by remember { mutableStateOf(false) }
     // 右下角菜单展开
     var menuOpen by remember { mutableStateOf(false) }
+    // §4.7 Cookie 导入/导出对话框
+    var showCookieImport by remember { mutableStateOf(false) }
+    var showCookieExport by remember { mutableStateOf(false) }
     // §4.4(a) 文件上传：暂存 WebView 的回调，picker 返回后触发
     var filePathCallback by remember { mutableStateOf<ValueCallback<Array<Uri>>?>(null) }
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -449,6 +452,29 @@ fun BrowserScreen(
                                     else "Cookie 清除可能未完成，其他数据已清除"
                                     Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                                 }
+                            }
+                        )
+                        // §4.7 Cookie 导入/导出
+                        DropdownMenuItem(
+                            text = { Text("导入 Cookie", color = Color.White) },
+                            onClick = {
+                                menuOpen = false
+                                showCookieImport = true
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("导出当前站点 Cookie", color = Color.White) },
+                            onClick = {
+                                menuOpen = false
+                                showCookieExport = true
+                            }
+                        )
+                        // §4.3 指纹自检：打开 browserleaks 对比不同 profile
+                        DropdownMenuItem(
+                            text = { Text("指纹自检（browserleaks）", color = Color.White) },
+                            onClick = {
+                                menuOpen = false
+                                navigate("https://browserleaks.com")
                             }
                         )
                         DropdownMenuItem(
@@ -874,6 +900,98 @@ fun BrowserScreen(
         }
     }
 
+    // §4.7 Cookie 导入对话框
+    if (showCookieImport) {
+        var cookieText by remember { mutableStateOf("") }
+        AlertDialog(
+            onDismissRequest = { showCookieImport = false },
+            title = { Text("导入 Cookie") },
+            text = {
+                Column {
+                    Text(
+                        "粘贴 Cookie（支持 EditThisCookie JSON / Netscape 格式 / name=value; 格式），将写入当前站点。",
+                        fontSize = 13.sp,
+                        color = Color(0xFF9AA4B2)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = cookieText,
+                        onValueChange = { cookieText = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        maxLines = 6,
+                        placeholder = { Text("粘贴 Cookie…", color = Color.Gray) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedTextColor = Color.White,
+                            unfocusedTextColor = Color.White
+                        )
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "⚠️ Cookie 等同账号凭据，请确认来源可信",
+                        fontSize = 12.sp,
+                        color = Color(0xFFFBBF24)
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    val url = webView?.url ?: urlText
+                    val count = importCookies(context, url, cookieText)
+                    showCookieImport = false
+                    Toast.makeText(
+                        context,
+                        if (count > 0) "已导入 $count 条 Cookie" else "未识别到有效 Cookie",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }) { Text("导入") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCookieImport = false }) { Text("取消") }
+            }
+        )
+    }
+
+    // §4.7 Cookie 导出对话框（当前站点）
+    if (showCookieExport) {
+        val url = webView?.url ?: urlText
+        val cookies = remember(url) {
+            CookieManager.getInstance().getCookie(url) ?: ""
+        }
+        AlertDialog(
+            onDismissRequest = { showCookieExport = false },
+            title = { Text("当前站点 Cookie") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "⚠️ 导出的 Cookie 等同账号凭据，请勿泄露",
+                        fontSize = 12.sp,
+                        color = Color(0xFFFBBF24)
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        cookies.ifBlank { "（当前站点无 Cookie）" },
+                        fontSize = 12.sp,
+                        color = Color.White
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (cookies.isNotBlank()) {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                                as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("cookies", cookies))
+                        Toast.makeText(context, "已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                    }
+                    showCookieExport = false
+                }) { Text("复制") }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCookieExport = false }) { Text("关闭") }
+            }
+        )
+    }
+
     // fail-closed 对话框（见问题3）：代理配置失败时默认阻止加载，
     // 只有用户明确点"仍然直连"才放行。
     if (showProxyFailDialog && !bypassProxyFail) {
@@ -1169,4 +1287,99 @@ private fun buildDownloadProxy(profile: Profile): java.net.Proxy {
         ProxyType.SOCKS5 -> java.net.Proxy(java.net.Proxy.Type.SOCKS, addr)
         ProxyType.NONE -> java.net.Proxy.NO_PROXY
     }
+}
+
+/**
+ * §4.7：导入 Cookie。
+ * 支持三种格式：
+ * 1. EditThisCookie JSON：[{"name":"...","value":"...","domain":"...","path":"...","secure":true,"expirationDate":...}]
+ * 2. Netscape 格式：domain\tTRUE\tpath\tsecure\texpires\tname\tvalue
+ * 3. 简单格式：name=value; name2=value2
+ * @return 成功导入的条数
+ */
+private fun importCookies(context: Context, url: String, text: String): Int {
+    if (text.isBlank() || url.isBlank()) return 0
+    val cm = CookieManager.getInstance()
+    var count = 0
+    val t = text.trim()
+    try {
+        when {
+            // 1. EditThisCookie JSON 数组
+            t.startsWith("[") -> {
+                val arr = com.google.gson.JsonParser.parseString(t).asJsonArray
+                for (el in arr) {
+                    try {
+                        val o = el.asJsonObject
+                        val name = o.get("name")?.asString ?: continue
+                        val value = o.get("value")?.asString ?: ""
+                        val domain = o.get("domain")?.asString ?: ""
+                        val path = o.get("path")?.asString ?: "/"
+                        val secure = o.get("secure")?.asBoolean ?: false
+                        val exp = o.get("expirationDate")?.asLong
+                        val sb = StringBuilder("$name=$value; Path=$path")
+                        if (domain.isNotBlank()) sb.append("; Domain=$domain")
+                        if (secure) sb.append("; Secure")
+                        if (exp != null) {
+                            val date = java.text.SimpleDateFormat(
+                                "EEE, dd MMM yyyy HH:mm:ss z",
+                                java.util.Locale.US
+                            ).apply {
+                                timeZone = java.util.TimeZone.getTimeZone("GMT")
+                            }.format(java.util.Date(exp * 1000))
+                            sb.append("; Expires=$date")
+                        }
+                        // 用 domain 或当前 url 设置
+                        val setUrl = if (domain.isNotBlank()) {
+                            "https://${domain.trimStart('.')}$path"
+                        } else url
+                        cm.setCookie(setUrl, sb.toString())
+                        count++
+                    } catch (_: Exception) { }
+                }
+            }
+            // 2. Netscape 格式（包含制表符）
+            t.contains("\t") -> {
+                for (line in t.lines()) {
+                    if (line.isBlank() || line.startsWith("#")) continue
+                    val parts = line.split("\t")
+                    if (parts.size < 7) continue
+                    try {
+                        val domain = parts[0]
+                        val path = parts[2]
+                        val secure = parts[3].equals("TRUE", ignoreCase = true)
+                        val expires = parts[4].toLongOrNull() ?: 0
+                        val name = parts[5]
+                        val value = parts[6]
+                        val sb = StringBuilder("$name=$value; Path=$path; Domain=$domain")
+                        if (secure) sb.append("; Secure")
+                        if (expires > 0) {
+                            val date = java.text.SimpleDateFormat(
+                                "EEE, dd MMM yyyy HH:mm:ss z",
+                                java.util.Locale.US
+                            ).apply {
+                                timeZone = java.util.TimeZone.getTimeZone("GMT")
+                            }.format(java.util.Date(expires * 1000))
+                            sb.append("; Expires=$date")
+                        }
+                        cm.setCookie("https://${domain.trimStart('.')}$path", sb.toString())
+                        count++
+                    } catch (_: Exception) { }
+                }
+            }
+            // 3. 简单 name=value; 格式
+            else -> {
+                for (part in t.split(";")) {
+                    val kv = part.trim().split("=", limit = 2)
+                    if (kv.size == 2 && kv[0].isNotBlank()) {
+                        cm.setCookie(url, "${kv[0].trim()}=${kv[1].trim()}")
+                        count++
+                    }
+                }
+            }
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("BrowserScreen", "Cookie 导入失败", e)
+    }
+    cm.flush()
+    return count
 }
