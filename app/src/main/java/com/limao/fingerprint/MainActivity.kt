@@ -250,14 +250,15 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
     private fun ExportDialog(
         profiles: List<Profile>,
         onDismiss: () -> Unit,
-        onExported: () -> Unit
+        onExported: () -> Unit,
+        title: String = "导出全部 Profile"
     ) {
         var password by remember { mutableStateOf("") }
         var result by remember { mutableStateOf<String?>(null) }
         val context = androidx.compose.ui.platform.LocalContext.current
         androidx.compose.material3.AlertDialog(
             onDismissRequest = onDismiss,
-            title = { androidx.compose.material3.Text("导出全部 Profile") },
+            title = { androidx.compose.material3.Text(title) },
             text = {
                 androidx.compose.foundation.layout.Column {
                     androidx.compose.material3.Text(
@@ -660,6 +661,67 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
         // §4.9 导出/导入对话框状态
         var showExportDialog by remember { mutableStateOf(false) }
         var showImportDialog by remember { mutableStateOf(false) }
+        // 单环境导出：被选中的 profile id
+        var exportSingleId by remember { mutableStateOf<String?>(null) }
+
+        /** 克隆指定 profile（§4.9）：复制配置，新 ID/slot/fpSeed，不复制 Cookie */
+        fun cloneProfileById(profileId: String) {
+            val source = profiles.find { it.id == profileId } ?: return
+            scope.launch {
+                try {
+                    val cloned = source.copy(
+                        id = java.util.UUID.randomUUID().toString(),
+                        slot = -1,
+                        name = source.name + "（副本）",
+                        fpSeed = java.util.UUID.randomUUID().leastSignificantBits,
+                        lastVisitedUrl = "",
+                        lastUsedAt = 0L,
+                        createdAt = System.currentTimeMillis()
+                    )
+                    repository.addProfile(cloned)
+                    Toast.makeText(this@MainActivity, "已克隆", Toast.LENGTH_SHORT).show()
+                    screen = Screen.List
+                } catch (e: NoFreeSlotException) {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "Profile 已达上限（6 个），请先删除不用的",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
+
+        /** 删除指定 profile：删配置 + 清凭据 + 清 WebView 数据目录 */
+        fun deleteProfileById(profileId: String) {
+            val target = profiles.find { it.id == profileId } ?: return
+            scope.launch {
+                val slot = target.slot
+                // 先删配置
+                repository.deleteProfile(profileId)
+                // 清除加密存储中的代理凭据
+                ProxyCredentialStore.clear(this@MainActivity, profileId)
+                // IO 线程清理数据目录（见问题11）：确认进程退出后再删，
+                // 检查删除结果，失败则标记脏 slot 不再复用
+                val cleanResult = kotlinx.coroutines.withContext(
+                    kotlinx.coroutines.Dispatchers.IO
+                ) {
+                    clearWebViewDataDir(slot)
+                }
+                screen = Screen.List
+                if (cleanResult) {
+                    Toast.makeText(
+                        this@MainActivity, "已删除，浏览数据已清除",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Toast.makeText(
+                        this@MainActivity,
+                        "配置已删除，但浏览数据清理失败（slot $slot 已锁定不再分配）",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
+            }
+        }
 
         when (val s = screen) {
             is Screen.List -> {
@@ -707,12 +769,16 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                     },
                     onLaunch = { profileId ->
                         val profile = profiles.find { it.id == profileId } ?: return@ProfileListScreen
+                        scope.launch { repository.updateLastUsedAt(profileId) }
                         launchBrowser(profile)
                     },
                     onKill = { profileId -> killProfileProcess(profileId) },
                     onEdit = { profileId -> screen = Screen.Settings(profileId) },
                     onAdd = { screen = Screen.Settings(null) },
+                    onClone = { profileId -> cloneProfileById(profileId) },
+                    onDelete = { profileId -> deleteProfileById(profileId) },
                     onExportAll = { showExportDialog = true },
+                    onExportSingle = { profileId -> exportSingleId = profileId },
                     onImport = { showImportDialog = true }
                 )
                 // §4.9 导出/导入对话框
@@ -721,6 +787,16 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         profiles = profiles,
                         onDismiss = { showExportDialog = false },
                         onExported = { showExportDialog = false }
+                    )
+                }
+                // 单环境导出
+                val exportSingle = exportSingleId?.let { id -> profiles.find { it.id == id } }
+                if (exportSingle != null) {
+                    ExportDialog(
+                        profiles = listOf(exportSingle),
+                        onDismiss = { exportSingleId = null },
+                        onExported = { exportSingleId = null },
+                        title = "导出环境「${exportSingle.name.ifBlank { "未命名" }}」"
                     )
                 }
                 if (showImportDialog) {
@@ -767,60 +843,10 @@ class MainActivity : androidx.fragment.app.FragmentActivity() {
                         }
                     },
                     onClone = if (editing == null) null else ({
-                        // §4.9 克隆：复制配置，新 ID/slot/fpSeed，不复制 Cookie
-                        scope.launch {
-                            try {
-                                val cloned = editing.copy(
-                                    id = java.util.UUID.randomUUID().toString(),
-                                    slot = -1,
-                                    name = editing.name + "（副本）",
-                                    fpSeed = java.util.UUID.randomUUID().leastSignificantBits,
-                                    lastVisitedUrl = "",
-                                    createdAt = System.currentTimeMillis()
-                                )
-                                repository.addProfile(cloned)
-                                Toast.makeText(
-                                    this@MainActivity, "已克隆", Toast.LENGTH_SHORT
-                                ).show()
-                                screen = Screen.List
-                            } catch (e: NoFreeSlotException) {
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "Profile 已达上限（6 个），请先删除不用的",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
+                        cloneProfileById(editing.id)
                     }),
                     onDelete = if (editing == null) null else ({
-                        scope.launch {
-                            val slot = editing.slot
-                            val profileId = editing.id
-                            // 先删配置
-                            repository.deleteProfile(profileId)
-                            // 清除加密存储中的代理凭据
-                            ProxyCredentialStore.clear(this@MainActivity, profileId)
-                            // IO 线程清理数据目录（见问题11）：确认进程退出后再删，
-                            // 检查删除结果，失败则标记脏 slot 不再复用
-                            val cleanResult = kotlinx.coroutines.withContext(
-                                kotlinx.coroutines.Dispatchers.IO
-                            ) {
-                                clearWebViewDataDir(slot)
-                            }
-                            screen = Screen.List
-                            if (cleanResult) {
-                                Toast.makeText(
-                                    this@MainActivity, "已删除，浏览数据已清除",
-                                    Toast.LENGTH_SHORT
-                                ).show()
-                            } else {
-                                Toast.makeText(
-                                    this@MainActivity,
-                                    "配置已删除，但浏览数据清理失败（slot $slot 已锁定不再分配）",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
-                        }
+                        deleteProfileById(editing.id)
                     }),
                     onNavigateBack = { screen = Screen.List }
                 )

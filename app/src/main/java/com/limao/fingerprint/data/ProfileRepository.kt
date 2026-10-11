@@ -187,6 +187,17 @@ class ProfileRepository private constructor(private val appContext: Context) {
         mutate { list -> list.filterNot { it.id == id } }
     }
 
+    /** 仅更新 lastUsedAt（主进程启动浏览器时调用） */
+    suspend fun updateLastUsedAt(id: String, timestamp: Long = System.currentTimeMillis()) {
+        try {
+            mutate { list ->
+                list.map { if (it.id == id) it.copy(lastUsedAt = timestamp) else it }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("ProfileRepository", "updateLastUsedAt 失败", e)
+        }
+    }
+
     /** 按 id 取单个（一次性） */
     suspend fun getProfileById(id: String): Profile? =
         profiles.first().find { it.id == id }
