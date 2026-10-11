@@ -124,6 +124,14 @@ private sealed interface ProxySetupState {
     data class Failed(val reason: String) : ProxySetupState
 }
 
+/** §4.8 多标签：每个标签一个 WebView，同一进程共享 Cookie/代理 */
+private data class BrowserTab(
+    val id: String = java.util.UUID.randomUUID().toString(),
+    val webView: WebView,
+    var title: String = "新标签页",
+    var url: String = "about:blank"
+)
+
 /**
  * 浏览器界面（运行在 :wvN 独立进程，由 BrowserActivity 承载）。
  *
@@ -142,18 +150,10 @@ fun BrowserScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    // §4.8 多标签：每个标签一个 WebView，同一进程共享 Cookie/代理
-    data class BrowserTab(
-        val id: String = java.util.UUID.randomUUID().toString(),
-        val webView: WebView,
-        var title: String = "新标签页",
-        var url: String = "about:blank"
-    )
+    // §4.8 多标签状态
     var tabs by remember { mutableStateOf<List<BrowserTab>>(emptyList()) }
     var activeTabId by remember { mutableStateOf<String?>(null) }
     var showTabSwitcher by remember { mutableStateOf(false) }
-    // 标签容器：FrameLayout，手动管理 WebView 子视图的显示/隐藏
-    var tabContainer by remember { mutableStateOf<android.widget.FrameLayout?>(null) }
 
     /** 当前活动标签的 WebView（替代原来的单 webView 变量） */
     fun activeWebView(): WebView? = tabs.find { it.id == activeTabId }?.webView
