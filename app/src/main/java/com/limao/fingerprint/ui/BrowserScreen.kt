@@ -18,6 +18,8 @@ import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -447,7 +449,7 @@ private fun ProxyStatusBadge(type: ProxyType, ok: Boolean?) {
                 Text(
                     diagnoseText,
                     fontSize = 12.sp,
-                    modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())
+                    modifier = Modifier.verticalScroll(rememberScrollState())
                 )
             },
             confirmButton = {
