@@ -10,7 +10,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      issues: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -26,23 +25,16 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "platforms;android-36" "build-tools;34.0.0"
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
 
-      - name: Set up Gradle 8.7
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: 8.7
-
       - name: Build debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Report build errors (temporary debug)
+      - name: Upload build log on failure
         if: failure()
-        run: |
-          gradle :app:compileDebugKotlin --no-daemon > /tmp/build.log 2>&1 || true
-          ERRS=$(grep -E "^e: |error:|FAILED|Could not resolve|Could not find" /tmp/build.log | head -40)
-          if [ -z "$ERRS" ]; then ERRS=$(tail -30 /tmp/build.log); fi
-          gh issue create --title "build-${{ github.run_number }} 构建失败日志（调试用）" --body "$ERRS" || true
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: app/build/outputs/logs/
+          if-no-files-found: ignore
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
