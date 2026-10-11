@@ -335,6 +335,7 @@ fun ProfileListScreen(
                         ProfileCard(
                             profile = profile,
                             isRunning = profile.id == activeProfileId,
+                            faviconEnabled = faviconEnabled,
                             onLaunch = { onLaunch(profile.id) },
                             onEdit = { onEdit(profile.id) }
                         )
@@ -376,6 +377,7 @@ private fun GroupChip(label: String, selected: Boolean, onClick: () -> Unit) {
 private fun ProfileCard(
     profile: Profile,
     isRunning: Boolean,
+    faviconEnabled: Boolean,
     onLaunch: () -> Unit,
     onEdit: () -> Unit
 ) {
