@@ -61,8 +61,10 @@ object WebViewProxy {
             val config = ProxyConfig.Builder()
                 .addProxyRule("$scheme://$host:$port")
                 .build()
-            ProxyController.getInstance().setProxyOverride(config)
-            Log.i(TAG, "代理已应用: $scheme://$host:$port")
+            // setProxyOverride 没有单参数版本，必须传 executor（null=直接跑）和回调
+            ProxyController.getInstance().setProxyOverride(config, null, Runnable {
+                Log.i(TAG, "代理已应用: $scheme://$host:$port")
+            })
             true
         } catch (e: Exception) {
             Log.w(TAG, "代理设置失败", e)
@@ -74,8 +76,9 @@ object WebViewProxy {
     fun clearProxy(): Boolean {
         return try {
             if (isSupported()) {
-                ProxyController.getInstance().clearProxyOverride()
-                Log.i(TAG, "代理已清除，切回直连")
+                ProxyController.getInstance().clearProxyOverride(null, Runnable {
+                    Log.i(TAG, "代理已清除，切回直连")
+                })
             }
             true
         } catch (e: Exception) {
