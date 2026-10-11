@@ -17,6 +17,7 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -48,6 +50,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -411,9 +414,12 @@ fun BrowserScreen(profile: Profile, onNavigateBack: () -> Unit) {
     }
 }
 
-/** 状态条右端的代理徽章 */
+/** 状态条右端的代理徽章，点击出诊断报告 */
 @Composable
 private fun ProxyStatusBadge(type: ProxyType, ok: Boolean?) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    var showDiagnose by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var diagnoseText by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf("") }
     val (label, color) = when {
         ok == false -> "代理设置失败·已直连" to Color(0xFFF87171)
         type == ProxyType.HTTP -> "HTTP 已连接" to Color(0xFF4ADE80)
@@ -427,6 +433,26 @@ private fun ProxyStatusBadge(type: ProxyType, ok: Boolean?) {
         modifier = Modifier
             .clip(RoundedCornerShape(6.dp))
             .background(color.copy(alpha = 0.25f))
+            .clickable {
+                diagnoseText = WebViewProxy.diagnose(context)
+                showDiagnose = true
+            }
             .padding(horizontal = 8.dp, vertical = 3.dp)
     )
+    if (showDiagnose) {
+        AlertDialog(
+            onDismissRequest = { showDiagnose = false },
+            title = { Text("代理诊断") },
+            text = {
+                Text(
+                    diagnoseText,
+                    fontSize = 12.sp,
+                    modifier = Modifier.verticalScroll(androidx.compose.foundation.rememberScrollState())
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showDiagnose = false }) { Text("关闭") }
+            }
+        )
+    }
 }

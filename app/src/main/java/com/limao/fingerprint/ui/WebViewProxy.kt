@@ -147,4 +147,100 @@ object WebViewProxy {
         }
     }
 
+    /**
+     * 代理诊断：逐步检查反射链路，返回每一步的结果。
+     * 用于定位"显示已连接但实际不生效"的问题。
+     */
+    fun diagnose(context: Context): String {
+        val sb = StringBuilder()
+        sb.appendLine("=== 代理诊断 ===")
+        sb.appendLine("Android: ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT})")
+        sb.appendLine("设备: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}")
+        sb.appendLine("进程: ${getProcessName()}")
+        sb.appendLine()
+
+        val activityThreadClass: Class<*>
+        try {
+            activityThreadClass = Class.forName("android.app.ActivityThread")
+            sb.appendLine("① ActivityThread: OK")
+        } catch (e: Exception) {
+            sb.appendLine("① ActivityThread: 失败 - ${e.message}")
+            return sb.toString()
+        }
+
+        val boundApp: Any?
+        try {
+            val currentThread = activityThreadClass
+                .getDeclaredMethod("currentActivityThread").invoke(null)
+            val boundAppField = activityThreadClass.getDeclaredField("mBoundApplication")
+            boundAppField.isAccessible = true
+            boundApp = boundAppField.get(currentThread)
+            sb.appendLine("② mBoundApplication: ${if (boundApp != null) "OK" else "null!"}")
+            if (boundApp == null) return sb.toString()
+        } catch (e: Exception) {
+            sb.appendLine("② mBoundApplication: 失败 - ${e.message}")
+            return sb.toString()
+        }
+
+        val receivers: Map<*, *>
+        try {
+            val infoField = boundApp.javaClass.getDeclaredField("info")
+            infoField.isAccessible = true
+            val loadedApk = infoField.get(boundApp)
+            val receiversField = loadedApk.javaClass.getDeclaredField("mReceivers")
+            receiversField.isAccessible = true
+            @Suppress("UNCHECKED_CAST")
+            receivers = receiversField.get(loadedApk) as? Map<*, *> ?: emptyMap<Any, Any>()
+            var total = 0
+            for ((_, v) in receivers) {
+                total += (v as? Map<*, *>)?.size ?: 0
+            }
+            sb.appendLine("③ mReceivers: OK，共 $total 个 receiver")
+        } catch (e: Exception) {
+            sb.appendLine("③ mReceivers: 失败 - ${e.message}")
+            return sb.toString()
+        }
+
+        var found: String? = null
+        val proxyRelated = mutableListOf<String>()
+        for ((_, receiverMap) in receivers) {
+            val map = receiverMap as? Map<*, *> ?: continue
+            for (receiver in map.keys) {
+                val name = receiver?.javaClass?.name ?: continue
+                if (name.contains("proxy", ignoreCase = true)) {
+                    proxyRelated.add(name)
+                }
+                if (name.contains("ProxyChangeListener")) {
+                    found = name
+                }
+            }
+        }
+        sb.appendLine("④ 含 proxy 的 receiver: ${if (proxyRelated.isEmpty()) "无" else proxyRelated.joinToString()}")
+        sb.appendLine("⑤ ProxyChangeListener: ${found ?: "未找到!"}")
+        sb.appendLine()
+
+        try {
+            val proxyInfoClass = Class.forName("android.net.ProxyInfo")
+            val m = proxyInfoClass.getDeclaredMethod(
+                "buildDirectProxy", String::class.java, Int::class.javaPrimitiveType
+            )
+            val info = m.invoke(null, "127.0.0.1", 8080)
+            sb.appendLine("⑥ ProxyInfo 构造: OK ($info)")
+        } catch (e: Exception) {
+            sb.appendLine("⑥ ProxyInfo 构造: 失败 - ${e.message}")
+        }
+
+        return sb.toString()
+    }
+
+    private fun getProcessName(): String {
+        return try {
+            val activityThreadClass = Class.forName("android.app.ActivityThread")
+            val method = activityThreadClass.getDeclaredMethod("currentProcessName")
+            method.invoke(null) as? String ?: "unknown"
+        } catch (e: Exception) {
+            "unknown"
+        }
+    }
+
 }
