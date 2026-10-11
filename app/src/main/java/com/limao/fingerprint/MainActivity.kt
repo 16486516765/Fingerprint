@@ -6,10 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
@@ -36,6 +36,7 @@ import com.limao.fingerprint.data.ProxyCredentialStore
 import com.limao.fingerprint.ui.BrowserActivity
 import com.limao.fingerprint.ui.ProfileListScreen
 import com.limao.fingerprint.ui.ProfileSettingsScreen
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /** 深色主题：纯黑背景 */
@@ -74,7 +75,7 @@ private sealed interface Screen {
  * 主 Activity（跑在默认主进程）：Profile 列表 + 设置页。
  * 点"启动"后按 profile.slot 显式启动对应 :wvN 进程的 BrowserActivity。
  */
-class MainActivity : ComponentActivity() {
+class MainActivity : androidx.fragment.app.FragmentActivity() {
 
     /** BUG-4：JSON 损坏时显示恢复选项 */
     private var showCorruptDialog by mutableStateOf(false)
@@ -90,9 +91,8 @@ class MainActivity : ComponentActivity() {
         // §4.10 防截屏：根据设置应用 FLAG_SECURE
         lifecycleScope.launch {
             try {
-                val secure = kotlinx.coroutines.flow.first(
-                    ProfileRepository.getInstance(this@MainActivity).secureFlagEnabled
-                )
+                val secure = ProfileRepository.getInstance(this@MainActivity).secureFlagEnabled
+                    .first()
                 if (secure) {
                     window.setFlags(
                         android.view.WindowManager.LayoutParams.FLAG_SECURE,
@@ -519,10 +519,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             try {
                 val repository = ProfileRepository.getInstance(this@MainActivity)
-                val enabled = repository.appLockEnabled
-                    .let { flow ->
-                        kotlinx.coroutines.flow.first(flow)
-                    }
+                val enabled = repository.appLockEnabled.first()
                 if (!enabled) {
                     appUnlocked = true
                     return@launch
@@ -597,7 +594,7 @@ class MainActivity : ComponentActivity() {
                             ?.removePrefix("wv")?.toIntOrNull()
                     }.toSet()
                 val repository = ProfileRepository.getInstance(this@MainActivity)
-                val profiles = repository.profiles.value
+                val profiles = repository.profiles.first()
                 val running = profiles.filter { it.slot in liveSlots }.map { it.id }.toSet()
                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                     runningProfileIds = running
@@ -615,7 +612,7 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
                 val repository = ProfileRepository.getInstance(this@MainActivity)
-                val profile = repository.profiles.value.find { it.id == profileId }
+                val profile = repository.profiles.first().find { it.id == profileId }
                     ?: return@launch
                 val targetSuffix = ":wv${profile.slot}"
                 val am = getSystemService(android.content.Context.ACTIVITY_SERVICE)

@@ -10,6 +10,7 @@ import androidx.lifecycle.lifecycleScope
 import com.limao.fingerprint.FingerprintTheme
 import com.limao.fingerprint.data.Profile
 import com.limao.fingerprint.data.ProfileRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 /**
@@ -36,9 +37,8 @@ open class BrowserActivity : ComponentActivity() {
         // §4.10 防截屏：根据设置应用 FLAG_SECURE（浏览器进程也要防）
         lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             try {
-                val secure = kotlinx.coroutines.flow.first(
-                    ProfileRepository.getInstance(this@BrowserActivity).secureFlagEnabled
-                )
+                val secure = ProfileRepository.getInstance(this@BrowserActivity).secureFlagEnabled
+                    .first()
                 if (secure) {
                     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Main) {
                         window.setFlags(
