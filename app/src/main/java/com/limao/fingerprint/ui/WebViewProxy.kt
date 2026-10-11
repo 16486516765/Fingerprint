@@ -61,8 +61,9 @@ object WebViewProxy {
             val config = ProxyConfig.Builder()
                 .addProxyRule("$scheme://$host:$port")
                 .build()
-            // setProxyOverride 没有单参数版本，必须传 executor（null=直接跑）和回调
-            ProxyController.getInstance().setProxyOverride(config, null, Runnable {
+            // setProxyOverride 必须传 executor（直接在当前线程跑回调）
+            val directExecutor = java.util.concurrent.Executor { it.run() }
+            ProxyController.getInstance().setProxyOverride(config, directExecutor, Runnable {
                 Log.i(TAG, "代理已应用: $scheme://$host:$port")
             })
             true
@@ -76,7 +77,8 @@ object WebViewProxy {
     fun clearProxy(): Boolean {
         return try {
             if (isSupported()) {
-                ProxyController.getInstance().clearProxyOverride(null, Runnable {
+                val directExecutor = java.util.concurrent.Executor { it.run() }
+                ProxyController.getInstance().clearProxyOverride(directExecutor, Runnable {
                     Log.i(TAG, "代理已清除，切回直连")
                 })
             }
