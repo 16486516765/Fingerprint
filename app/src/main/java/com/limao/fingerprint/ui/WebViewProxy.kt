@@ -24,7 +24,8 @@ import kotlin.coroutines.resume
  * 设置互不影响（进程隔离，见问题8）。
  *
  * - HTTP   → ProxyConfig "http://host:port"
- * - SOCKS5 → ProxyConfig "socks://host:port"（官方文档确认 scheme 支持 SOCKS）
+ * - SOCKS5 → ProxyConfig "socks5://host:port"（注意不是 socks://，
+ *   Chromium 里 socks:// 按 SOCKS4 解析，会 DNS 泄露；见 BUG-2）
  * - 直连   → clearProxyOverride() 明确清除，不残留旧代理
  *
  * 注意 ProxyController.setProxyOverride()/clearProxyOverride() 是异步的：
@@ -94,7 +95,9 @@ object WebViewProxy {
         return@withContext try {
             val scheme = when (type) {
                 ProxyType.HTTP -> "http"
-                ProxyType.SOCKS5 -> "socks"
+                // 注意：Chromium 里 "socks://" 按 SOCKS4 解析，"socks5://" 才是 SOCKS5
+                //（见 BUG-2）。SOCKS4 不支持域名由代理端解析，会 DNS 泄露。
+                ProxyType.SOCKS5 -> "socks5"
                 ProxyType.NONE -> return@withContext ProxySetupResult.Applied
             }
             val config = ProxyConfig.Builder()
