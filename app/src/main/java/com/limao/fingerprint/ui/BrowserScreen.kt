@@ -419,6 +419,12 @@ fun BrowserScreen(
                     if (profile.userAgent.isNotBlank()) {
                         settings.userAgentString = profile.userAgent
                     }
+                    // BUG-7：第三方 Cookie 默认禁用会导致 SSO 登录、验证码、
+                    // 支付 iframe 等失效，默认开启
+                    android.webkit.CookieManager.getInstance().apply {
+                        setAcceptCookie(true)
+                        setAcceptThirdPartyCookies(this@apply, true)
+                    }
                     // 注意：代理设置不在这里做。ProxyController 是异步的，
                     // 由 LaunchedEffect(webViewCreated) 等待配置应用后再 loadUrl
                     //（见问题2、问题3）。这里只创建 WebView。
