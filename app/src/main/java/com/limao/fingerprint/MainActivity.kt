@@ -126,7 +126,7 @@ class MainActivity : ComponentActivity() {
         var screen by remember { mutableStateOf<Screen>(Screen.List) }
         val repository = remember { ProfileRepository.getInstance(this) }
         val profiles by repository.profiles.collectAsState(initial = emptyList())
-        val faviconEnabled by repository.faviconEnabled.collectAsState(initial = true)
+        val faviconEnabled by repository.faviconEnabled.collectAsState(initial = false)
         val scope = rememberCoroutineScope()
 
         when (val s = screen) {
